@@ -20,6 +20,7 @@ namespace client {
 
 // 前向声明
 class WindowsVPNClient;
+class ConfigManager;
 
 /**
  * @brief 简单的HTTP Web服务器
@@ -59,6 +60,11 @@ public:
     void setVPNClient(std::shared_ptr<WindowsVPNClient> client);
 
     /**
+     * @brief 设置配置管理器
+     */
+    void setConfigManager(std::shared_ptr<ConfigManager> config_manager);
+
+    /**
      * @brief 在浏览器中打开Web UI
      */
     bool openInBrowser();
@@ -79,6 +85,10 @@ private:
     std::string apiGetLogs();
     std::string apiTestTap();
     std::string apiBandwidthTest();
+    std::string apiGetProfiles();
+    std::string apiSaveProfile(const std::string& body);
+    std::string apiDeleteProfile(const std::string& body);
+    std::string apiLoadProfile(const std::string& body);
     
     // 静态文件服务
     std::string serveStaticFile(const std::string& path);
@@ -101,6 +111,10 @@ private:
     // VPN客户端
     std::shared_ptr<WindowsVPNClient> vpn_client_;
     std::mutex client_mutex_;
+    
+    // 配置管理器
+    std::shared_ptr<ConfigManager> config_manager_;
+    std::mutex config_mutex_;
     
     // 日志系统
     std::vector<std::string> logs_;

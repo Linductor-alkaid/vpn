@@ -2,6 +2,7 @@
 #include "client/windows_vpn_client.h"
 #include "client/windows_tap_interface.h"
 #include "client/web_server.h"
+#include "client/config_manager.h"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -242,9 +243,16 @@ bool handleWebUICommand() {
     auto client_unique = WindowsVPNClientManager::getInstance().createClient();
     auto client = std::shared_ptr<WindowsVPNClient>(client_unique.release());
     
+    // 创建配置管理器
+    auto configManager = std::make_shared<ConfigManager>();
+    if (!configManager->initialize()) {
+        std::cout << "Warning: Failed to initialize config manager\n";
+    }
+    
     // 创建Web服务器
     auto webServer = std::make_shared<SimpleWebServer>();
     webServer->setVPNClient(client);
+    webServer->setConfigManager(configManager);
     
     // 启动Web服务器（尝试多个端口）
     uint16_t ports[] = {8080, 8081, 8082, 9090, 9091};

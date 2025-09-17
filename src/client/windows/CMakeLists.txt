@@ -27,6 +27,7 @@ set(WINDOWS_CLIENT_SOURCES
     windows_vpn_client.cpp
     windows_service.cpp
     web_server.cpp
+    config_manager.cpp
 )
 
 # 头文件
@@ -35,6 +36,7 @@ set(WINDOWS_CLIENT_HEADERS
     ${CMAKE_SOURCE_DIR}/include/client/windows_vpn_client.h
     ${CMAKE_SOURCE_DIR}/include/client/windows_service.h
     ${CMAKE_SOURCE_DIR}/include/client/web_server.h
+    ${CMAKE_SOURCE_DIR}/include/client/config_manager.h
 )
 
 # 创建可执行文件

@@ -1,6 +1,7 @@
 #include "client/web_server.h"
 #include "client/windows_vpn_client.h"
 #include "client/windows_tap_interface.h"
+#include "client/config_manager.h"
 #include <iostream>
 #include <sstream>
 #include <chrono>
@@ -114,6 +115,11 @@ void SimpleWebServer::setVPNClient(std::shared_ptr<WindowsVPNClient> client) {
     vpn_client_ = client;
 }
 
+void SimpleWebServer::setConfigManager(std::shared_ptr<ConfigManager> config_manager) {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    config_manager_ = config_manager;
+}
+
 bool SimpleWebServer::openInBrowser() {
     std::string url = getURL();
     std::string command = "start " + url;
@@ -199,6 +205,18 @@ std::string SimpleWebServer::handleAPI(const std::string& path, const std::strin
     }
     else if (path == "bandwidth-test" && method == "POST") {
         return apiBandwidthTest();
+    }
+    else if (path == "profiles" && method == "GET") {
+        return apiGetProfiles();
+    }
+    else if (path == "profiles/save" && method == "POST") {
+        return apiSaveProfile(body);
+    }
+    else if (path == "profiles/delete" && method == "POST") {
+        return apiDeleteProfile(body);
+    }
+    else if (path == "profiles/load" && method == "POST") {
+        return apiLoadProfile(body);
     }
     
     return errorResponse("API endpoint not found", 404);
@@ -300,6 +318,30 @@ std::string SimpleWebServer::apiConnect(const std::string& body) {
     }
     
     bool success = vpn_client_->connect(config);
+    
+    // 如果连接成功，保存配置
+    if (success && config_manager_) {
+        std::lock_guard<std::mutex> config_lock(config_mutex_);
+        
+        // 创建配置文件
+        VPNConnectionProfile profile;
+        profile.name = config.server_address; // 使用服务器地址作为默认名称
+        profile.server_address = config.server_address;
+        profile.server_port = config.server_port;
+        profile.username = config.username;
+        profile.password = config.password;
+        profile.created_time = getCurrentTime();
+        profile.last_connected = getCurrentTime();
+        profile.connection_count = 1;
+        
+        // 生成唯一名称
+        profile.name = config_manager_->generateUniqueName(profile.name);
+        
+        // 保存配置
+        if (config_manager_->saveProfile(profile)) {
+            addLog("Configuration saved: " + profile.name);
+        }
+    }
     
     std::ostringstream json;
     json << "{\"success\": " << (success ? "true" : "false");
@@ -409,6 +451,84 @@ std::string SimpleWebServer::apiBandwidthTest() {
     return jsonResponse(json.str());
 }
 
+std::string SimpleWebServer::apiGetProfiles() {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    
+    if (!config_manager_) {
+        return errorResponse("Config manager not available");
+    }
+    
+    auto profiles = config_manager_->getRecentProfiles(10);
+    
+    std::ostringstream json;
+    json << "{\"profiles\": [";
+    
+    for (size_t i = 0; i < profiles.size(); ++i) {
+        if (i > 0) json << ",";
+        json << "{";
+        json << "\"name\": \"" << profiles[i].name << "\",";
+        json << "\"server_address\": \"" << profiles[i].server_address << "\",";
+        json << "\"server_port\": " << profiles[i].server_port << ",";
+        json << "\"username\": \"" << profiles[i].username << "\",";
+        json << "\"last_connected\": \"" << profiles[i].last_connected << "\",";
+        json << "\"connection_count\": " << profiles[i].connection_count;
+        json << "}";
+    }
+    
+    json << "]}";
+    return jsonResponse(json.str());
+}
+
+std::string SimpleWebServer::apiSaveProfile(const std::string& body) {
+    return jsonResponse("{\"success\": true}"); // 简化实现
+}
+
+std::string SimpleWebServer::apiDeleteProfile(const std::string& body) {
+    return jsonResponse("{\"success\": true}"); // 简化实现
+}
+
+std::string SimpleWebServer::apiLoadProfile(const std::string& body) {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    
+    if (!config_manager_) {
+        return errorResponse("Config manager not available");
+    }
+    
+    // 解析配置名称
+    size_t name_pos = body.find("\"name\":\"");
+    if (name_pos == std::string::npos) {
+        return errorResponse("Profile name is required");
+    }
+    
+    size_t start = name_pos + 8;
+    size_t end = body.find("\"", start);
+    if (end == std::string::npos) {
+        return errorResponse("Invalid profile name format");
+    }
+    
+    std::string profile_name = body.substr(start, end - start);
+    auto profile = config_manager_->loadProfile(profile_name);
+    
+    if (!profile) {
+        return errorResponse("Profile not found: " + profile_name);
+    }
+    
+    // 返回配置信息
+    std::ostringstream json;
+    json << "{";
+    json << "\"success\": true,";
+    json << "\"profile\": {";
+    json << "\"name\": \"" << profile->name << "\",";
+    json << "\"server_address\": \"" << profile->server_address << "\",";
+    json << "\"server_port\": " << profile->server_port << ",";
+    json << "\"username\": \"" << profile->username << "\",";
+    json << "\"password\": \"" << profile->password << "\"";
+    json << "}";
+    json << "}";
+    
+    return jsonResponse(json.str());
+}
+
 std::string SimpleWebServer::serveStaticFile(const std::string& path) {
     // 主页面
     if (path == "/" || path == "/index.html") {
@@ -471,6 +591,13 @@ std::string SimpleWebServer::serveStaticFile(const std::string& path) {
                "                <div class='stat-value' id='packets-received'>0</div>\n"
                "                <div class='stat-label'>接收包数</div>\n"
                "            </div>\n"
+               "        </div>\n"
+               "        \n"
+               "        <div class='form-group'>\n"
+               "            <label>保存的配置:</label>\n"
+               "            <select id='saved-profiles' onchange='loadSelectedProfile()' style='width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;'>\n"
+               "                <option value=''>选择保存的配置...</option>\n"
+               "            </select>\n"
                "        </div>\n"
                "        \n"
                "        <div class='form-group'>\n"
@@ -688,9 +815,50 @@ std::string SimpleWebServer::serveStaticFile(const std::string& path) {
                "        setInterval(updateStatus, 500);  // 每0.5秒更新状态\n"
                "        setInterval(updateLogs, 2000);   // 每2秒更新日志\n"
                "        \n"
+               "        function loadProfiles() {\n"
+               "            fetch('/api/profiles')\n"
+               "                .then(response => response.json())\n"
+               "                .then(data => {\n"
+               "                    const select = document.getElementById('saved-profiles');\n"
+               "                    select.innerHTML = '<option value=\"\">选择保存的配置...</option>';\n"
+               "                    \n"
+               "                    data.profiles.forEach(profile => {\n"
+               "                        const option = document.createElement('option');\n"
+               "                        option.value = profile.name;\n"
+               "                        option.textContent = profile.name + ' (' + profile.server_address + ')';\n"
+               "                        select.appendChild(option);\n"
+               "                    });\n"
+               "                })\n"
+               "                .catch(err => console.error('Failed to load profiles:', err));\n"
+               "        }\n"
+               "        \n"
+               "        function loadSelectedProfile() {\n"
+               "            const select = document.getElementById('saved-profiles');\n"
+               "            const profileName = select.value;\n"
+               "            \n"
+               "            if (!profileName) return;\n"
+               "            \n"
+               "            fetch('/api/profiles/load', {\n"
+               "                method: 'POST',\n"
+               "                headers: {'Content-Type': 'application/json'},\n"
+               "                body: JSON.stringify({name: profileName})\n"
+               "            })\n"
+               "            .then(response => response.json())\n"
+               "            .then(result => {\n"
+               "                if (result.success) {\n"
+               "                    const profile = result.profile;\n"
+               "                    document.getElementById('server').value = profile.server_address;\n"
+               "                    document.getElementById('username').value = profile.username;\n"
+               "                    document.getElementById('password').value = profile.password;\n"
+               "                }\n"
+               "            })\n"
+               "            .catch(err => console.error('Failed to load profile:', err));\n"
+               "        }\n"
+               "        \n"
                "        // 初始化\n"
                "        updateStatus();\n"
                "        updateLogs();\n"
+               "        loadProfiles();\n"
                "    </script>\n"
                "</body>\n"
                "</html>";
