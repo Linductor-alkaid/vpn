@@ -253,6 +253,15 @@ std::string SimpleWebServer::apiConnect(const std::string& body) {
         return errorResponse("No VPN client instance");
     }
     
+    // 检查当前状态
+    auto current_state = vpn_client_->getConnectionState();
+    if (current_state == WindowsVPNClient::ConnectionState::CONNECTING ||
+        current_state == WindowsVPNClient::ConnectionState::AUTHENTICATING) {
+        return errorResponse("Connection already in progress, please wait");
+    }
+    
+    addLog("Starting new connection...");
+    
     // 简单的JSON解析（实际项目中应使用专业的JSON库）
     WindowsVPNClient::ConnectionConfig config;
     
@@ -309,8 +318,16 @@ std::string SimpleWebServer::apiDisconnect() {
         return errorResponse("No VPN client instance");
     }
     
-    vpn_client_->disconnect();
-    return jsonResponse("{\"success\": true}");
+    addLog("Disconnecting VPN client...");
+    
+    // 异步断开连接，避免阻塞Web API
+    std::thread disconnect_thread([this]() {
+        vpn_client_->disconnect();
+        addLog("VPN client disconnected");
+    });
+    disconnect_thread.detach();
+    
+    return jsonResponse("{\"success\": true, \"message\": \"Disconnect initiated\"}");
 }
 
 std::string SimpleWebServer::apiGetConfig() {
@@ -548,6 +565,11 @@ std::string SimpleWebServer::serveStaticFile(const std::string& path) {
                "        }\n"
                "        \n"
                "        function connect() {\n"
+               "            if (isConnected) {\n"
+               "                alert('VPN已连接，请先断开现有连接');\n"
+               "                return;\n"
+               "            }\n"
+               "            \n"
                "            const server = document.getElementById('server').value;\n"
                "            const username = document.getElementById('username').value;\n"
                "            const password = document.getElementById('password').value;\n"
@@ -556,6 +578,11 @@ std::string SimpleWebServer::serveStaticFile(const std::string& path) {
                "                alert('请输入服务器地址');\n"
                "                return;\n"
                "            }\n"
+               "            \n"
+               "            // 禁用连接按钮，防止重复点击\n"
+               "            const connectBtn = document.getElementById('connect-btn');\n"
+               "            connectBtn.disabled = true;\n"
+               "            connectBtn.textContent = '连接中...';\n"
                "            \n"
                "            const data = {\n"
                "                server: server,\n"
@@ -573,15 +600,31 @@ std::string SimpleWebServer::serveStaticFile(const std::string& path) {
                "                if (!result.success) {\n"
                "                    alert('连接失败: ' + (result.error || '未知错误'));\n"
                "                }\n"
+               "                // 强制更新状态\n"
+               "                setTimeout(updateStatus, 100);\n"
                "            })\n"
-               "            .catch(err => alert('连接请求失败: ' + err));\n"
+               "            .catch(err => {\n"
+               "                alert('连接请求失败: ' + err);\n"
+               "            })\n"
+               "            .finally(() => {\n"
+               "                // 恢复按钮状态\n"
+               "                setTimeout(() => {\n"
+               "                    connectBtn.textContent = '连接';\n"
+               "                    updateStatus(); // 更新按钮状态\n"
+               "                }, 1000);\n"
+               "            });\n"
                "        }\n"
                "        \n"
                "        function disconnect() {\n"
                "            fetch('/api/disconnect', {method: 'POST'})\n"
                "                .then(response => response.json())\n"
                "                .then(result => {\n"
-               "                    if (!result.success) {\n"
+               "                    if (result.success) {\n"
+               "                        // 立即更新状态，不等待定时器\n"
+               "                        setTimeout(updateStatus, 100);\n"
+               "                        setTimeout(updateStatus, 500);\n"
+               "                        setTimeout(updateStatus, 1000);\n"
+               "                    } else {\n"
                "                        alert('断开失败');\n"
                "                    }\n"
                "                })\n"
@@ -641,9 +684,9 @@ std::string SimpleWebServer::serveStaticFile(const std::string& path) {
                "                .catch(err => console.error('Logs update failed:', err));\n"
                "        }\n"
                "        \n"
-               "        // 定期更新状态和日志\n"
-               "        setInterval(updateStatus, 2000);\n"
-               "        setInterval(updateLogs, 5000);\n"
+               "        // 定期更新状态和日志 - 更频繁的更新\n"
+               "        setInterval(updateStatus, 500);  // 每0.5秒更新状态\n"
+               "        setInterval(updateLogs, 2000);   // 每2秒更新日志\n"
                "        \n"
                "        // 初始化\n"
                "        updateStatus();\n"

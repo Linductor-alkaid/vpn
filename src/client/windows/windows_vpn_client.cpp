@@ -18,74 +18,163 @@ WindowsVPNClient::WindowsVPNClient()
 }
 
 WindowsVPNClient::~WindowsVPNClient() {
-    disconnect();
+    // 安全析构：强制停止所有活动
+    should_stop_.store(true);
+    
+    // 关闭所有资源
+    closeSocket();
+    if (tap_interface_) {
+        try {
+            tap_interface_->closeAdapter();
+        } catch (...) {
+            // 忽略析构时的错误
+        }
+    }
+    
+    // 分离所有线程
+    if (connection_thread_.joinable()) {
+        connection_thread_.detach();
+    }
+    if (tap_reader_thread_.joinable()) {
+        tap_reader_thread_.detach();
+    }
+    if (network_reader_thread_.joinable()) {
+        network_reader_thread_.detach();
+    }
+    if (network_writer_thread_.joinable()) {
+        network_writer_thread_.detach();
+    }
+    if (keepalive_thread_.joinable()) {
+        keepalive_thread_.detach();
+    }
+    if (reconnect_thread_.joinable()) {
+        reconnect_thread_.detach();
+    }
 }
 
 bool WindowsVPNClient::connect(const ConnectionConfig& config) {
+    // 使用互斥锁保护整个连接过程
+    static std::mutex connect_mutex;
+    std::lock_guard<std::mutex> connect_lock(connect_mutex);
+    
     auto current_state = connection_state_.load();
     
-    // 如果正在连接或已连接，先断开
+    // 如果正在连接或已连接，先完全断开
     if (current_state != ConnectionState::DISCONNECTED) {
-        if (current_state == ConnectionState::CONNECTED || 
-            current_state == ConnectionState::CONNECTING ||
-            current_state == ConnectionState::AUTHENTICATING) {
-            logMessage("Disconnecting existing connection before reconnecting...");
-            disconnect();
-            
-            // 等待断开完成
-            auto start_time = std::chrono::steady_clock::now();
-            while (connection_state_.load() != ConnectionState::DISCONNECTED && 
-                   std::chrono::steady_clock::now() - start_time < std::chrono::seconds(5)) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
+        logMessage("Force disconnecting existing connection before reconnecting...");
+        
+        // 强制断开 - 不等待，直接清理
+        should_stop_.store(true);
+        
+        // 强制关闭网络资源
+        closeSocket();
+        if (tap_interface_) {
+            tap_interface_->closeAdapter();
         }
+        
+        // 等待所有线程完全结束
+        if (connection_thread_.joinable()) {
+            connection_thread_.detach(); // 强制分离，避免阻塞
+        }
+        if (tap_reader_thread_.joinable()) {
+            tap_reader_thread_.detach();
+        }
+        if (network_reader_thread_.joinable()) {
+            network_reader_thread_.detach();
+        }
+        if (network_writer_thread_.joinable()) {
+            network_writer_thread_.detach();
+        }
+        if (keepalive_thread_.joinable()) {
+            keepalive_thread_.detach();
+        }
+        if (reconnect_thread_.joinable()) {
+            reconnect_thread_.detach();
+        }
+        
+        // 等待一段时间确保资源清理完成
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
         
         // 强制重置状态
         setState(ConnectionState::DISCONNECTED);
+        logMessage("Previous connection forcibly cleaned up");
     }
     
+    // 重置所有状态
     config_ = config;
     should_stop_.store(false);
+    
+    // 清空队列
+    {
+        std::lock_guard<std::mutex> queue_lock(outbound_queue_mutex_);
+        while (!outbound_queue_.empty()) {
+            outbound_queue_.pop();
+        }
+    }
+    
     setState(ConnectionState::CONNECTING);
     
-    // 启动连接线程
+    // 启动新的连接线程
     connection_thread_ = std::thread(&WindowsVPNClient::connectionThreadFunc, this);
     
+    logMessage("New connection attempt started");
     return true;
 }
 
 void WindowsVPNClient::disconnect() {
+    if (connection_state_.load() == ConnectionState::DISCONNECTED) {
+        return; // 已经断开连接
+    }
+    
     should_stop_.store(true);
     setState(ConnectionState::DISCONNECTING);
     
-    // 等待所有线程结束
-    if (connection_thread_.joinable()) {
-        connection_thread_.join();
-    }
-    if (tap_reader_thread_.joinable()) {
-        tap_reader_thread_.join();
-    }
-    if (network_reader_thread_.joinable()) {
-        network_reader_thread_.join();
-    }
-    if (network_writer_thread_.joinable()) {
-        network_writer_thread_.join();
-    }
-    if (keepalive_thread_.joinable()) {
-        keepalive_thread_.join();
-    }
-    if (reconnect_thread_.joinable()) {
-        reconnect_thread_.join();
-    }
+    logMessage("Initiating safe disconnect...");
     
-    // 清理资源
+    // 立即关闭网络资源
     closeSocket();
     if (tap_interface_) {
-        tap_interface_->closeAdapter();
+        try {
+            tap_interface_->setAdapterStatus(false);
+            tap_interface_->closeAdapter();
+        } catch (...) {
+            // 忽略TAP关闭错误
+        }
+    }
+    
+    // 通知所有等待的线程
+    outbound_queue_cv_.notify_all();
+    
+    // 快速分离所有线程，避免等待
+    if (connection_thread_.joinable()) {
+        connection_thread_.detach();
+    }
+    if (tap_reader_thread_.joinable()) {
+        tap_reader_thread_.detach();
+    }
+    if (network_reader_thread_.joinable()) {
+        network_reader_thread_.detach();
+    }
+    if (network_writer_thread_.joinable()) {
+        network_writer_thread_.detach();
+    }
+    if (keepalive_thread_.joinable()) {
+        keepalive_thread_.detach();
+    }
+    if (reconnect_thread_.joinable()) {
+        reconnect_thread_.detach();
+    }
+    
+    // 清理队列
+    {
+        std::lock_guard<std::mutex> queue_lock(outbound_queue_mutex_);
+        while (!outbound_queue_.empty()) {
+            outbound_queue_.pop();
+        }
     }
     
     setState(ConnectionState::DISCONNECTED);
-    logMessage("VPN connection disconnected");
+    logMessage("VPN connection disconnected safely");
 }
 
 WindowsVPNClient::ConnectionStats WindowsVPNClient::getConnectionStats() const {
