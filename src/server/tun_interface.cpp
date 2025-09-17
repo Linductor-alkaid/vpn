@@ -41,7 +41,7 @@ bool TunTapInterface::createInterface(bool is_tun, const std::string& interface_
     // 打开TUN/TAP设备
     fd_ = open("/dev/net/tun", O_RDWR);
     if (fd_ < 0) {
-        std::cerr << "无法打开 /dev/net/tun: " << strerror(errno) << std::endl;
+        std::cerr << "Cannot open /dev/net/tun: " << strerror(errno) << std::endl;
         return false;
     }
     
@@ -60,7 +60,7 @@ bool TunTapInterface::createInterface(bool is_tun, const std::string& interface_
     
     // 创建接口
     if (ioctl(fd_, TUNSETIFF, &ifr) < 0) {
-        std::cerr << "TUNSETIFF ioctl 失败: " << strerror(errno) << std::endl;
+        std::cerr << "TUNSETIFF ioctl failed: " << strerror(errno) << std::endl;
         ::close(fd_);
         fd_ = -1;
         return false;
@@ -70,14 +70,14 @@ bool TunTapInterface::createInterface(bool is_tun, const std::string& interface_
     is_tun_ = is_tun;
     interface_name_ = ifr.ifr_name;
     
-    std::cout << "成功创建 " << (is_tun_ ? "TUN" : "TAP") 
-              << " 接口: " << interface_name_ << std::endl;
+    std::cout << "Successfully created " << (is_tun_ ? "TUN" : "TAP") 
+              << " interface: " << interface_name_ << std::endl;
     
     return true;
 }
 #else
 bool TunTapInterface::createInterface(bool is_tun, const std::string& interface_name) {
-    std::cerr << "Windows平台暂不支持TUN/TAP接口创建" << std::endl;
+    std::cerr << "TUN/TAP interface creation not supported on Windows platform" << std::endl;
     return false;
 }
 #endif
@@ -89,17 +89,17 @@ void TunTapInterface::close() {
 #endif
         fd_ = -1;
         interface_name_.clear();
-        std::cout << "TUN/TAP接口已关闭" << std::endl;
+        std::cout << "TUN/TAP interface closed" << std::endl;
     }
 }
 
 bool TunTapInterface::setIPAddress(const std::string& ip_address, const std::string& netmask) {
     if (!isOpen()) {
-        std::cerr << "接口未打开" << std::endl;
+        std::cerr << "Interface not open" << std::endl;
         return false;
     }
     
-    // 构造设置IP地址的命令
+    // Construct command to set IP address
     std::stringstream cmd;
     cmd << "ip addr add " << ip_address << "/" << netmask 
         << " dev " << interface_name_;
@@ -111,15 +111,15 @@ bool TunTapInterface::setIPAddress(const std::string& ip_address, const std::str
     ip_address_ = ip_address;
     netmask_ = netmask;
     
-    std::cout << "设置IP地址: " << ip_address << "/" << netmask 
-              << " 到接口 " << interface_name_ << std::endl;
+    std::cout << "Set IP address: " << ip_address << "/" << netmask 
+              << " to interface " << interface_name_ << std::endl;
     
     return true;
 }
 
 bool TunTapInterface::bringUp() {
     if (!isOpen()) {
-        std::cerr << "接口未打开" << std::endl;
+        std::cerr << "Interface not open" << std::endl;
         return false;
     }
     
@@ -130,13 +130,13 @@ bool TunTapInterface::bringUp() {
         return false;
     }
     
-    std::cout << "接口 " << interface_name_ << " 已启用" << std::endl;
+    std::cout << "Interface " << interface_name_ << " is up" << std::endl;
     return true;
 }
 
 bool TunTapInterface::bringDown() {
     if (!isOpen()) {
-        std::cerr << "接口未打开" << std::endl;
+        std::cerr << "Interface not open" << std::endl;
         return false;
     }
     
@@ -147,7 +147,7 @@ bool TunTapInterface::bringDown() {
         return false;
     }
     
-    std::cout << "接口 " << interface_name_ << " 已禁用" << std::endl;
+    std::cout << "Interface " << interface_name_ << " is down" << std::endl;
     return true;
 }
 
@@ -155,7 +155,7 @@ bool TunTapInterface::addRoute(const std::string& destination,
                               const std::string& netmask,
                               const std::string& gateway) {
     if (!isOpen()) {
-        std::cerr << "接口未打开" << std::endl;
+        std::cerr << "Interface not open" << std::endl;
         return false;
     }
     
@@ -172,7 +172,7 @@ bool TunTapInterface::addRoute(const std::string& destination,
         return false;
     }
     
-    std::cout << "添加路由: " << destination << "/" << netmask;
+    std::cout << "Add route: " << destination << "/" << netmask;
     if (!gateway.empty()) {
         std::cout << " via " << gateway;
     }
@@ -183,7 +183,7 @@ bool TunTapInterface::addRoute(const std::string& destination,
 
 bool TunTapInterface::removeRoute(const std::string& destination, const std::string& netmask) {
     if (!isOpen()) {
-        std::cerr << "接口未打开" << std::endl;
+        std::cerr << "Interface not open" << std::endl;
         return false;
     }
     
@@ -195,7 +195,7 @@ bool TunTapInterface::removeRoute(const std::string& destination, const std::str
         return false;
     }
     
-    std::cout << "删除路由: " << destination << "/" << netmask 
+    std::cout << "Remove route: " << destination << "/" << netmask 
               << " dev " << interface_name_ << std::endl;
     
     return true;
@@ -248,7 +248,7 @@ bool TunTapInterface::setNonBlocking(bool non_blocking) {
 #ifndef _WIN32
     int flags = fcntl(fd_, F_GETFL, 0);
     if (flags < 0) {
-        std::cerr << "获取文件标志失败: " << strerror(errno) << std::endl;
+        std::cerr << "Failed to get file flags: " << strerror(errno) << std::endl;
         return false;
     }
     
@@ -259,7 +259,7 @@ bool TunTapInterface::setNonBlocking(bool non_blocking) {
     }
     
     if (fcntl(fd_, F_SETFL, flags) < 0) {
-        std::cerr << "设置非阻塞模式失败: " << strerror(errno) << std::endl;
+        std::cerr << "Failed to set non-blocking mode: " << strerror(errno) << std::endl;
         return false;
     }
     
@@ -278,11 +278,11 @@ void TunTapInterface::resetStats() {
 }
 
 bool TunTapInterface::executeCommand(const std::string& command) {
-    std::cout << "执行命令: " << command << std::endl;
+    std::cout << "Executing command: " << command << std::endl;
     
     int result = system(command.c_str());
     if (result != 0) {
-        std::cerr << "命令执行失败: " << command << " (返回码: " << result << ")" << std::endl;
+        std::cerr << "Command execution failed: " << command << " (return code: " << result << ")" << std::endl;
         return false;
     }
     

@@ -11,9 +11,9 @@ using namespace sduvpn::server;
 // 全局服务器实例
 std::unique_ptr<VPNServer> g_server;
 
-// 信号处理函数
+// Signal handler function
 void signalHandler(int signal) {
-    std::cout << "\n收到信号 " << signal << "，正在停止服务器..." << std::endl;
+    std::cout << "\nReceived signal " << signal << ", stopping server..." << std::endl;
     
     if (g_server) {
         g_server->stop();
@@ -58,7 +58,7 @@ void printServerInfo(const VPNServer& server, const ServerConfig& config) {
     std::cout << std::endl;
 }
 
-// 监控线程函数
+// Monitor thread function
 void monitorThread(VPNServer* server) {
     auto last_time = std::chrono::steady_clock::now();
     VPNServer::Statistics last_stats = server->getStatistics();
@@ -77,22 +77,22 @@ void monitorThread(VPNServer* server) {
         double interval_seconds = duration.count();
         
         if (interval_seconds > 0) {
-            // 计算速率
+            // Calculate rates
             uint64_t bytes_sent_rate = (current_stats.bytes_sent - last_stats.bytes_sent) / interval_seconds;
             uint64_t bytes_recv_rate = (current_stats.bytes_received - last_stats.bytes_received) / interval_seconds;
             uint64_t packets_sent_rate = (current_stats.packets_sent - last_stats.packets_sent) / interval_seconds;
             uint64_t packets_recv_rate = (current_stats.packets_received - last_stats.packets_received) / interval_seconds;
             
             std::cout << "========================================" << std::endl;
-            std::cout << "服务器统计信息 (运行时间: " << current_stats.uptime_seconds << " 秒)" << std::endl;
-            std::cout << "活跃客户端: " << current_stats.active_clients << std::endl;
-            std::cout << "总发送: " << current_stats.bytes_sent << " 字节, " 
-                      << current_stats.packets_sent << " 包" << std::endl;
-            std::cout << "总接收: " << current_stats.bytes_received << " 字节, " 
-                      << current_stats.packets_received << " 包" << std::endl;
-            std::cout << "发送速率: " << bytes_sent_rate << " B/s, " 
+            std::cout << "Server Statistics (Uptime: " << current_stats.uptime_seconds << " seconds)" << std::endl;
+            std::cout << "Active Clients: " << current_stats.active_clients << std::endl;
+            std::cout << "Total Sent: " << current_stats.bytes_sent << " bytes, " 
+                      << current_stats.packets_sent << " packets" << std::endl;
+            std::cout << "Total Received: " << current_stats.bytes_received << " bytes, " 
+                      << current_stats.packets_received << " packets" << std::endl;
+            std::cout << "Send Rate: " << bytes_sent_rate << " B/s, " 
                       << packets_sent_rate << " pps" << std::endl;
-            std::cout << "接收速率: " << bytes_recv_rate << " B/s, " 
+            std::cout << "Receive Rate: " << bytes_recv_rate << " B/s, " 
                       << packets_recv_rate << " pps" << std::endl;
             std::cout << "========================================" << std::endl;
         }
@@ -103,11 +103,11 @@ void monitorThread(VPNServer* server) {
 }
 
 int main(int argc, char* argv[]) {
-    std::cout << "SDUVPN 服务器 v1.0.0" << std::endl;
-    std::cout << "版权所有 (C) 2024 SDUVPN 项目" << std::endl;
+    std::cout << "SDUVPN Server v1.0.0" << std::endl;
+    std::cout << "Copyright (C) 2024 SDUVPN Project" << std::endl;
     std::cout << std::endl;
     
-    // 解析命令行参数
+    // Parse command line arguments
     std::string config_file;
     uint16_t port = 0;
     std::string network;
@@ -124,58 +124,58 @@ int main(int argc, char* argv[]) {
             if (i + 1 < argc) {
                 config_file = argv[++i];
             } else {
-                std::cerr << "错误: " << arg << " 需要一个参数" << std::endl;
+                std::cerr << "Error: " << arg << " requires an argument" << std::endl;
                 return 1;
             }
         } else if (arg == "-p" || arg == "--port") {
             if (i + 1 < argc) {
                 port = static_cast<uint16_t>(std::stoi(argv[++i]));
             } else {
-                std::cerr << "错误: " << arg << " 需要一个参数" << std::endl;
+                std::cerr << "Error: " << arg << " requires an argument" << std::endl;
                 return 1;
             }
         } else if (arg == "-n" || arg == "--network") {
             if (i + 1 < argc) {
                 network = argv[++i];
             } else {
-                std::cerr << "错误: " << arg << " 需要一个参数" << std::endl;
+                std::cerr << "Error: " << arg << " requires an argument" << std::endl;
                 return 1;
             }
         } else if (arg == "-i" || arg == "--interface") {
             if (i + 1 < argc) {
                 interface_name = argv[++i];
             } else {
-                std::cerr << "错误: " << arg << " 需要一个参数" << std::endl;
+                std::cerr << "Error: " << arg << " requires an argument" << std::endl;
                 return 1;
             }
         } else if (arg == "-d" || arg == "--debug") {
             debug_mode = true;
         } else {
-            std::cerr << "错误: 未知参数 " << arg << std::endl;
+            std::cerr << "Error: Unknown argument " << arg << std::endl;
             printUsage(argv[0]);
             return 1;
         }
     }
     
-    // 创建服务器配置
+    // Create server configuration
     ServerConfig config;
     
-    // 从配置文件加载
+    // Load from configuration file
     if (!config_file.empty()) {
-        std::cout << "从配置文件加载: " << config_file << std::endl;
+        std::cout << "Loading configuration from: " << config_file << std::endl;
         if (!config.loadFromFile(config_file)) {
-            std::cerr << "无法加载配置文件: " << config_file << std::endl;
+            std::cerr << "Failed to load configuration file: " << config_file << std::endl;
             return 1;
         }
     }
     
-    // 应用命令行参数覆盖
+    // Apply command line parameter overrides
     if (port != 0) {
         config.setListenPort(port);
     }
     
     if (!network.empty()) {
-        // 解析网络地址和掩码
+        // Parse network address and mask
         size_t slash_pos = network.find('/');
         if (slash_pos != std::string::npos) {
             std::string net_addr = network.substr(0, slash_pos);
@@ -183,9 +183,9 @@ int main(int argc, char* argv[]) {
             
             config.setVirtualNetwork(net_addr);
             
-            // 将CIDR转换为子网掩码
+            // Convert CIDR to subnet mask
             if (net_mask.find('.') == std::string::npos) {
-                // CIDR格式 (如 /24)
+                // CIDR format (e.g., /24)
                 int cidr = std::stoi(net_mask);
                 uint32_t mask = 0xFFFFFFFF << (32 - cidr);
                 
@@ -193,7 +193,7 @@ int main(int argc, char* argv[]) {
                 addr.s_addr = htonl(mask);
                 config.setVirtualNetmask(inet_ntoa(addr));
             } else {
-                // 点分十进制格式
+                // Dotted decimal format
                 config.setVirtualNetmask(net_mask);
             }
         }
@@ -207,47 +207,47 @@ int main(int argc, char* argv[]) {
         config.setDebugMode(true);
     }
     
-    // 验证配置
+    // Validate configuration
     if (!config.validate()) {
-        std::cerr << "配置验证失败" << std::endl;
+        std::cerr << "Configuration validation failed" << std::endl;
         return 1;
     }
     
-    // 创建服务器实例
+    // Create server instance
     g_server = std::make_unique<VPNServer>();
     
-    // 注册信号处理器
+    // Register signal handlers
     signal(SIGINT, signalHandler);   // Ctrl+C
-    signal(SIGTERM, signalHandler);  // 终止信号
+    signal(SIGTERM, signalHandler);  // Termination signal
 #ifndef _WIN32
-    signal(SIGQUIT, signalHandler);  // Quit信号
-    signal(SIGHUP, signalHandler);   // Hangup信号
+    signal(SIGQUIT, signalHandler);  // Quit signal
+    signal(SIGHUP, signalHandler);   // Hangup signal
 #endif
     
-    // 打印服务器信息
+    // Print server information
     printServerInfo(*g_server, config);
     
-    // 启动服务器
+    // Start server
     if (!g_server->start(config)) {
-        std::cerr << "服务器启动失败" << std::endl;
+        std::cerr << "Failed to start server" << std::endl;
         return 1;
     }
     
-    // 启动监控线程
+    // Start monitor thread
     std::thread monitor_thread(monitorThread, g_server.get());
     
-    std::cout << "服务器正在运行，按 Ctrl+C 停止..." << std::endl;
+    std::cout << "Server is running, press Ctrl+C to stop..." << std::endl;
     
-    // 主循环
+    // Main loop
     while (g_server->isRunning()) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
     
-    // 等待监控线程结束
+    // Wait for monitor thread to finish
     if (monitor_thread.joinable()) {
         monitor_thread.join();
     }
     
-    std::cout << "服务器已停止" << std::endl;
+    std::cout << "Server stopped" << std::endl;
     return 0;
 }

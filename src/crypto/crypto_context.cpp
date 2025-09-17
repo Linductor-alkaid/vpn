@@ -37,7 +37,7 @@ bool CryptoContext::initialize(const uint8_t* key, size_t key_size) {
     
     // 生成随机IV
     if (SecureRandom::generate(impl_->iv, AES_GCM_IV_SIZE) != CryptoError::SUCCESS) {
-        std::cerr << "生成随机IV失败" << std::endl;
+        std::cerr << "Failed to generate random IV" << std::endl;
         return false;
     }
     

@@ -58,7 +58,7 @@ void ServerConfig::setDefaults() {
 bool ServerConfig::loadFromFile(const std::string& config_file) {
     std::ifstream file(config_file);
     if (!file.is_open()) {
-        std::cerr << "无法打开配置文件: " << config_file << std::endl;
+        std::cerr << "Cannot open configuration file: " << config_file << std::endl;
         return false;
     }
     
@@ -183,10 +183,10 @@ bool ServerConfig::loadFromString(const std::string& json_str) {
         return true;
         
     } catch (const json::exception& e) {
-        std::cerr << "JSON解析错误: " << e.what() << std::endl;
+        std::cerr << "JSON parsing error: " << e.what() << std::endl;
         return false;
     } catch (const std::exception& e) {
-        std::cerr << "配置加载错误: " << e.what() << std::endl;
+        std::cerr << "Configuration loading error: " << e.what() << std::endl;
         return false;
     }
 }
@@ -239,7 +239,7 @@ bool ServerConfig::saveToFile(const std::string& config_file) const {
         
         std::ofstream file(config_file);
         if (!file.is_open()) {
-            std::cerr << "无法创建配置文件: " << config_file << std::endl;
+            std::cerr << "Cannot create configuration file: " << config_file << std::endl;
             return false;
         }
         
@@ -249,26 +249,26 @@ bool ServerConfig::saveToFile(const std::string& config_file) const {
         return true;
         
     } catch (const std::exception& e) {
-        std::cerr << "配置保存错误: " << e.what() << std::endl;
+        std::cerr << "Configuration saving error: " << e.what() << std::endl;
         return false;
     }
 }
 #else
 // 不使用JSON库的简化实现
 bool ServerConfig::loadFromFile(const std::string& config_file) {
-    std::cout << "警告: 未启用JSON支持，使用默认配置" << std::endl;
+    std::cout << "Warning: JSON support not enabled, using default configuration" << std::endl;
     setDefaults();
     return true;
 }
 
 bool ServerConfig::loadFromString(const std::string& json_str) {
-    std::cout << "警告: 未启用JSON支持，使用默认配置" << std::endl;
+    std::cout << "Warning: JSON support not enabled, using default configuration" << std::endl;
     setDefaults();
     return true;
 }
 
 bool ServerConfig::saveToFile(const std::string& config_file) const {
-    std::cout << "警告: 未启用JSON支持，无法保存配置文件" << std::endl;
+    std::cout << "Warning: JSON support not enabled, cannot save configuration file" << std::endl;
     return false;
 }
 #endif
@@ -276,55 +276,55 @@ bool ServerConfig::saveToFile(const std::string& config_file) const {
 bool ServerConfig::validate() const {
     // 验证端口范围
     if (listen_port_ == 0 || listen_port_ > 65535) {
-        std::cerr << "无效的监听端口: " << listen_port_ << std::endl;
+        std::cerr << "Invalid listen port: " << listen_port_ << std::endl;
         return false;
     }
     
     // 验证最大客户端数
     if (max_clients_ == 0 || max_clients_ > 10000) {
-        std::cerr << "无效的最大客户端数: " << max_clients_ << std::endl;
+        std::cerr << "Invalid maximum client count: " << max_clients_ << std::endl;
         return false;
     }
     
     // 验证超时时间
     if (client_timeout_seconds_ < 30 || client_timeout_seconds_ > 3600) {
-        std::cerr << "无效的客户端超时时间: " << client_timeout_seconds_ << " 秒" << std::endl;
+        std::cerr << "Invalid client timeout: " << client_timeout_seconds_ << " seconds" << std::endl;
         return false;
     }
     
     // 验证工作线程数
     if (worker_threads_ == 0 || worker_threads_ > 64) {
-        std::cerr << "无效的工作线程数: " << worker_threads_ << std::endl;
+        std::cerr << "Invalid worker thread count: " << worker_threads_ << std::endl;
         return false;
     }
     
     // 验证缓冲区大小
     if (receive_buffer_size_ < 1024 || receive_buffer_size_ > 1048576) {
-        std::cerr << "无效的接收缓冲区大小: " << receive_buffer_size_ << std::endl;
+        std::cerr << "Invalid receive buffer size: " << receive_buffer_size_ << std::endl;
         return false;
     }
     
     if (send_buffer_size_ < 1024 || send_buffer_size_ > 1048576) {
-        std::cerr << "无效的发送缓冲区大小: " << send_buffer_size_ << std::endl;
+        std::cerr << "Invalid send buffer size: " << send_buffer_size_ << std::endl;
         return false;
     }
     
     // 验证虚拟网络配置（简单验证）
     if (virtual_network_.empty() || virtual_netmask_.empty()) {
-        std::cerr << "虚拟网络配置不能为空" << std::endl;
+        std::cerr << "Virtual network configuration cannot be empty" << std::endl;
         return false;
     }
     
     // 验证TUN接口名称
     if (tun_interface_name_.empty()) {
-        std::cerr << "TUN接口名称不能为空" << std::endl;
+        std::cerr << "TUN interface name cannot be empty" << std::endl;
         return false;
     }
     
     // 验证日志级别
     std::vector<std::string> valid_levels = {"trace", "debug", "info", "warn", "error", "critical"};
     if (std::find(valid_levels.begin(), valid_levels.end(), log_level_) == valid_levels.end()) {
-        std::cerr << "无效的日志级别: " << log_level_ << std::endl;
+        std::cerr << "Invalid log level: " << log_level_ << std::endl;
         return false;
     }
     

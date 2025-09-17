@@ -95,7 +95,7 @@ bool ClientSession::initializeCrypto(const std::vector<uint8_t>& shared_key) {
         return false;
         
     } catch (const std::exception& e) {
-        std::cerr << "加密初始化失败: " << e.what() << std::endl;
+        std::cerr << "Encryption initialization failed: " << e.what() << std::endl;
         crypto_context_.reset();
         crypto_initialized_ = false;
         return false;
@@ -119,7 +119,7 @@ bool ClientSession::encryptData(const std::vector<uint8_t>& plaintext,
         return true;
         
     } catch (const std::exception& e) {
-        std::cerr << "数据加密失败: " << e.what() << std::endl;
+        std::cerr << "Data encryption failed: " << e.what() << std::endl;
         return false;
     }
 }
@@ -141,7 +141,7 @@ bool ClientSession::decryptData(const std::vector<uint8_t>& ciphertext,
         return true;
         
     } catch (const std::exception& e) {
-        std::cerr << "数据解密失败: " << e.what() << std::endl;
+        std::cerr << "Data decryption failed: " << e.what() << std::endl;
         return false;
     }
 }

@@ -45,7 +45,7 @@ bool PacketRouter::initialize(const std::string& virtual_network,
     virtual_netmask_uint_ = ipStringToUint32(virtual_netmask);
     
     if (virtual_network_uint_ == 0 || virtual_netmask_uint_ == 0) {
-        std::cerr << "无效的虚拟网络配置: " << virtual_network << "/" << virtual_netmask << std::endl;
+        std::cerr << "Invalid virtual network configuration: " << virtual_network << "/" << virtual_netmask << std::endl;
         return false;
     }
     
@@ -53,7 +53,7 @@ bool PacketRouter::initialize(const std::string& virtual_network,
     RouteEntry virtual_route(virtual_network, virtual_netmask, "", "", 0, 0);
     static_routes_.push_back(virtual_route);
     
-    std::cout << "路由器初始化完成，虚拟网络: " << virtual_network << "/" << virtual_netmask << std::endl;
+    std::cout << "Router initialized, virtual network: " << virtual_network << "/" << virtual_netmask << std::endl;
     
     return true;
 }
@@ -70,7 +70,7 @@ void PacketRouter::addClientRoute(ClientId client_id, const std::string& virtual
     client_sessions_[client_id] = session;
     
     if (debug_mode_) {
-        std::cout << "添加客户端路由: " << virtual_ip << " -> 客户端 " << client_id << std::endl;
+        std::cout << "Add client route: " << virtual_ip << " -> client " << client_id << std::endl;
     }
 }
 
@@ -86,7 +86,7 @@ void PacketRouter::removeClientRoute(ClientId client_id) {
         client_sessions_.erase(client_id);
         
         if (debug_mode_) {
-            std::cout << "删除客户端路由: " << virtual_ip << " -> 客户端 " << client_id << std::endl;
+            std::cout << "Remove client route: " << virtual_ip << " -> client " << client_id << std::endl;
         }
     }
 }
@@ -110,7 +110,7 @@ bool PacketRouter::addStaticRoute(const RouteEntry& route) {
     }
     
     if (debug_mode_) {
-        std::cout << "添加静态路由: " << route.network << "/" << route.netmask;
+        std::cout << "Add static route: " << route.network << "/" << route.netmask;
         if (!route.gateway.empty()) {
             std::cout << " via " << route.gateway;
         }
@@ -132,7 +132,7 @@ bool PacketRouter::removeStaticRoute(const std::string& network, const std::stri
         static_routes_.erase(it);
         
         if (debug_mode_) {
-            std::cout << "删除静态路由: " << network << "/" << netmask << std::endl;
+            std::cout << "Remove static route: " << network << "/" << netmask << std::endl;
         }
         
         return true;
@@ -157,45 +157,45 @@ PacketRouter::RoutingResult PacketRouter::routePacket(const uint8_t* packet, siz
     std::string src_ip = ip_header->getSourceIP();
     
     if (debug_mode_) {
-        std::cout << "路由数据包: " << src_ip << " -> " << dest_ip << std::endl;
+        std::cout << "Route packet: " << src_ip << " -> " << dest_ip << std::endl;
     }
     
-    // 检查目标IP是否在虚拟网络中
+    // Check if destination IP is in virtual network
     if (!isInVirtualNetwork(dest_ip)) {
         result.action = RoutingResult::DROP;
-        result.reason = "目标IP不在虚拟网络中";
+        result.reason = "Destination IP not in virtual network";
         updateStats(result.action);
         return result;
     }
     
-    // 查找目标客户端
+    // Find target client
     ClientId target_client = findClientByIP(dest_ip);
     if (target_client != 0) {
-        // 转发给特定客户端
+        // Forward to specific client
         std::lock_guard<std::mutex> lock(route_mutex_);
         auto session_it = client_sessions_.find(target_client);
         if (session_it != client_sessions_.end()) {
             result.action = RoutingResult::TO_CLIENT;
             result.target_client = target_client;
             result.target_session = session_it->second;
-            result.reason = "转发给客户端 " + std::to_string(target_client);
+            result.reason = "Forward to client " + std::to_string(target_client);
         } else {
             result.action = RoutingResult::DROP;
-            result.reason = "客户端会话不存在";
+            result.reason = "Client session not found";
         }
     } else {
-        // 检查是否为广播地址
+        // Check if it's a broadcast address
         uint32_t dest_ip_uint = ipStringToUint32(dest_ip);
         uint32_t broadcast_addr = (virtual_network_uint_ & virtual_netmask_uint_) | (~virtual_netmask_uint_);
         
         if (dest_ip_uint == broadcast_addr || dest_ip_uint == 0xFFFFFFFF) {
-            // 广播数据包
+            // Broadcast packet
             result.action = RoutingResult::BROADCAST;
-            result.reason = "广播数据包";
+            result.reason = "Broadcast packet";
         } else {
-            // 转发给TUN接口（本地处理）
+            // Forward to TUN interface (local processing)
             result.action = RoutingResult::TO_TUN;
-            result.reason = "转发给TUN接口";
+            result.reason = "Forward to TUN interface";
         }
     }
     

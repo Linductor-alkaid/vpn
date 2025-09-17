@@ -49,13 +49,13 @@ VPNServer::~VPNServer() {
 
 bool VPNServer::start(const ServerConfig& config) {
     if (running_.load()) {
-        std::cerr << "服务器已经在运行" << std::endl;
+        std::cerr << "Server is already running" << std::endl;
         return false;
     }
     
-    // 验证配置
+    // Validate configuration
     if (!config.validate()) {
-        std::cerr << "服务器配置无效" << std::endl;
+        std::cerr << "Invalid server configuration" << std::endl;
         return false;
     }
     
@@ -63,15 +63,15 @@ bool VPNServer::start(const ServerConfig& config) {
     config_ = std::make_unique<ServerConfig>(config);
     listen_port_ = config.getListenPort();
     
-    std::cout << "启动SDUVPN服务器..." << std::endl;
-    std::cout << "监听端口: " << listen_port_ << std::endl;
-    std::cout << "虚拟网络: " << config.getVirtualNetwork() << "/" << config.getVirtualNetmask() << std::endl;
-    std::cout << "最大客户端: " << config.getMaxClients() << std::endl;
+    std::cout << "Starting SDUVPN server..." << std::endl;
+    std::cout << "Listen port: " << listen_port_ << std::endl;
+    std::cout << "Virtual network: " << config.getVirtualNetwork() << "/" << config.getVirtualNetmask() << std::endl;
+    std::cout << "Max clients: " << config.getMaxClients() << std::endl;
     
-    // 创建UDP套接字
+    // Create UDP socket
     udp_socket_ = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_socket_ < 0) {
-        std::cerr << "创建UDP套接字失败" << std::endl;
+        std::cerr << "Failed to create UDP socket" << std::endl;
         return false;
     }
     
@@ -79,7 +79,7 @@ bool VPNServer::start(const ServerConfig& config) {
     int reuse = 1;
     if (setsockopt(udp_socket_, SOL_SOCKET, SO_REUSEADDR, 
                    reinterpret_cast<const char*>(&reuse), sizeof(reuse)) < 0) {
-        std::cerr << "设置SO_REUSEADDR失败" << std::endl;
+        std::cerr << "Failed to set SO_REUSEADDR" << std::endl;
     }
     
     // 绑定地址
@@ -92,7 +92,7 @@ bool VPNServer::start(const ServerConfig& config) {
         server_addr.sin_addr.s_addr = INADDR_ANY;
     } else {
         if (inet_pton(AF_INET, config.getBindAddress().c_str(), &server_addr.sin_addr) != 1) {
-            std::cerr << "无效的绑定地址: " << config.getBindAddress() << std::endl;
+            std::cerr << "Invalid bind address: " << config.getBindAddress() << std::endl;
             closeSocket();
             return false;
         }
@@ -100,58 +100,58 @@ bool VPNServer::start(const ServerConfig& config) {
     
     if (bind(udp_socket_, reinterpret_cast<struct sockaddr*>(&server_addr), sizeof(server_addr)) < 0) {
 #ifdef _WIN32
-        std::cerr << "绑定地址失败: " << WSAGetLastError() << std::endl;
+        std::cerr << "Failed to bind address: " << WSAGetLastError() << std::endl;
 #else
-        std::cerr << "绑定地址失败: " << strerror(errno) << std::endl;
+        std::cerr << "Failed to bind address: " << strerror(errno) << std::endl;
 #endif
         closeSocket();
         return false;
     }
     
-    // 创建TUN接口
+    // Create TUN interface
     tun_interface_ = std::make_unique<TunTapInterface>();
     if (!tun_interface_->createTun(config.getTunInterfaceName())) {
-        std::cerr << "创建TUN接口失败" << std::endl;
+        std::cerr << "Failed to create TUN interface" << std::endl;
         closeSocket();
         return false;
     }
     
-    // 配置TUN接口
+    // Configure TUN interface
     if (!tun_interface_->setIPAddress(config.getVirtualNetwork(), config.getVirtualNetmask())) {
-        std::cerr << "设置TUN接口IP地址失败" << std::endl;
+        std::cerr << "Failed to set TUN interface IP address" << std::endl;
         closeSocket();
         return false;
     }
     
     if (!tun_interface_->bringUp()) {
-        std::cerr << "启用TUN接口失败" << std::endl;
+        std::cerr << "Failed to bring up TUN interface" << std::endl;
         closeSocket();
         return false;
     }
     
-    // 设置TUN接口为非阻塞模式
+    // Set TUN interface to non-blocking mode
     tun_interface_->setNonBlocking(true);
     
-    // 初始化数据包路由器
+    // Initialize packet router
     packet_router_ = std::make_unique<PacketRouter>();
     if (!packet_router_->initialize(config.getVirtualNetwork(), config.getVirtualNetmask())) {
-        std::cerr << "初始化数据包路由器失败" << std::endl;
+        std::cerr << "Failed to initialize packet router" << std::endl;
         closeSocket();
         return false;
     }
     
     packet_router_->setDebugMode(config.isDebugMode());
     
-    // 设置运行标志
+    // Set running flags
     running_.store(true);
     should_stop_.store(false);
     
-    // 启动工作线程
+    // Start worker threads
     network_thread_ = std::thread(&VPNServer::networkThreadFunc, this);
     tun_thread_ = std::thread(&VPNServer::tunThreadFunc, this);
     cleanup_thread_ = std::thread(&VPNServer::cleanupThreadFunc, this);
     
-    std::cout << "SDUVPN服务器启动成功" << std::endl;
+    std::cout << "SDUVPN server started successfully" << std::endl;
     return true;
 }
 
@@ -160,13 +160,13 @@ void VPNServer::stop() {
         return;
     }
     
-    std::cout << "停止SDUVPN服务器..." << std::endl;
+    std::cout << "Stopping SDUVPN server..." << std::endl;
     
-    // 设置停止标志
+    // Set stop flags
     should_stop_.store(true);
     running_.store(false);
     
-    // 等待线程结束
+    // Wait for threads to finish
     if (network_thread_.joinable()) {
         network_thread_.join();
     }
@@ -179,27 +179,27 @@ void VPNServer::stop() {
         cleanup_thread_.join();
     }
     
-    // 关闭网络套接字
+    // Close network socket
     closeSocket();
     
-    // 关闭TUN接口
+    // Close TUN interface
     if (tun_interface_) {
         tun_interface_->close();
         tun_interface_.reset();
     }
     
-    // 清理客户端会话
+    // Clean up client sessions
     {
         std::lock_guard<std::mutex> lock(sessions_mutex_);
         sessions_.clear();
         ip_to_client_.clear();
     }
     
-    // 清理路由器
+    // Clean up router
     packet_router_.reset();
     config_.reset();
     
-    std::cout << "SDUVPN服务器已停止" << std::endl;
+    std::cout << "SDUVPN server stopped" << std::endl;
 }
 
 size_t VPNServer::getClientCount() const {
@@ -221,7 +221,7 @@ VPNServer::Statistics VPNServer::getStatistics() const {
 }
 
 void VPNServer::networkThreadFunc() {
-    std::cout << "网络线程启动" << std::endl;
+    std::cout << "Network thread started" << std::endl;
     
     const size_t buffer_size = config_->getReceiveBufferSize();
     std::vector<uint8_t> buffer(buffer_size);
@@ -248,29 +248,29 @@ void VPNServer::networkThreadFunc() {
             int error = WSAGetLastError();
             if (error != WSAEWOULDBLOCK && error != WSAEINTR) {
                 if (!should_stop_.load()) {
-                    std::cerr << "接收数据失败: " << error << std::endl;
+                    std::cerr << "Failed to receive data: " << error << std::endl;
                 }
                 break;
             }
 #else
             if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
                 if (!should_stop_.load()) {
-                    std::cerr << "接收数据失败: " << strerror(errno) << std::endl;
+                    std::cerr << "Failed to receive data: " << strerror(errno) << std::endl;
                 }
                 break;
             }
 #endif
         }
         
-        // 避免CPU占用过高
+        // Avoid high CPU usage
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     
-    std::cout << "网络线程结束" << std::endl;
+    std::cout << "Network thread ended" << std::endl;
 }
 
 void VPNServer::tunThreadFunc() {
-    std::cout << "TUN线程启动" << std::endl;
+    std::cout << "TUN thread started" << std::endl;
     
     const size_t buffer_size = 2048;
     std::vector<uint8_t> buffer(buffer_size);
@@ -285,71 +285,71 @@ void VPNServer::tunThreadFunc() {
         if (bytes_read > 0) {
             handleTunPacket(buffer.data(), bytes_read);
         } else if (bytes_read < 0) {
-            // 非阻塞模式下的正常情况
+            // Normal case in non-blocking mode
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
     
-    std::cout << "TUN线程结束" << std::endl;
+    std::cout << "TUN thread ended" << std::endl;
 }
 
 void VPNServer::cleanupThreadFunc() {
-    std::cout << "清理线程启动" << std::endl;
+    std::cout << "Cleanup thread started" << std::endl;
     
     while (!should_stop_.load()) {
         cleanupInactiveSessions();
         
-        // 每30秒清理一次
+        // Cleanup every 30 seconds
         for (int i = 0; i < 30 && !should_stop_.load(); ++i) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
     }
     
-    std::cout << "清理线程结束" << std::endl;
+    std::cout << "Cleanup thread ended" << std::endl;
 }
 
 void VPNServer::handleClientMessage(const struct sockaddr_in& client_addr, 
                                    const uint8_t* data, size_t length) {
-    // 查找或创建客户端会话
+    // Find or create client session
     SessionPtr session = findOrCreateSession(client_addr);
     if (!session) {
         return;
     }
     
-    // 更新会话活跃时间
+    // Update session activity time
     session->updateLastActivity();
     
-    // 这里应该实现具体的消息处理逻辑
-    // 包括认证、密钥交换、数据包解密等
+    // This should implement specific message processing logic
+    // including authentication, key exchange, packet decryption, etc.
     
-    // 目前为简化实现，直接将数据作为IP数据包处理
+    // For simplified implementation, directly process data as IP packets
     if (session->getState() == SessionState::ACTIVE) {
-        // 使用路由器处理数据包
+        // Use router to process packets
         auto routing_result = packet_router_->routePacket(data, length);
         
         switch (routing_result.action) {
             case PacketRouter::RoutingResult::TO_CLIENT:
                 if (routing_result.target_session) {
-                    // 转发给目标客户端
-                    // 这里需要实现加密和发送逻辑
+                // Forward to target client
+                // Need to implement encryption and sending logic here
                 }
                 break;
                 
             case PacketRouter::RoutingResult::TO_TUN:
-                // 写入TUN接口
+                // Write to TUN interface
                 if (tun_interface_) {
                     tun_interface_->writePacket(data, length);
                 }
                 break;
                 
             case PacketRouter::RoutingResult::BROADCAST:
-                // 广播给所有客户端
+                // Broadcast to all clients
                 broadcastPacket(data, length, session->getClientId());
                 break;
                 
             case PacketRouter::RoutingResult::DROP:
             default:
-                // 丢弃数据包
+                // Drop packet
                 break;
         }
     }
@@ -360,25 +360,25 @@ void VPNServer::handleTunPacket(const uint8_t* data, size_t length) {
         return;
     }
     
-    // 使用路由器处理TUN接口的数据包
+    // Use router to process packets from TUN interface
     auto routing_result = packet_router_->routePacket(data, length);
     
     switch (routing_result.action) {
         case PacketRouter::RoutingResult::TO_CLIENT:
             if (routing_result.target_session) {
-                // 发送给特定客户端
-                // 这里需要实现加密和UDP发送逻辑
+            // Send to specific client
+            // Need to implement encryption and UDP sending logic here
             }
             break;
             
         case PacketRouter::RoutingResult::BROADCAST:
-            // 广播给所有客户端
+            // Broadcast to all clients
             broadcastPacket(data, length);
             break;
             
         case PacketRouter::RoutingResult::DROP:
         default:
-            // 丢弃数据包
+            // Drop packet
             break;
     }
 }
@@ -386,34 +386,34 @@ void VPNServer::handleTunPacket(const uint8_t* data, size_t length) {
 SessionPtr VPNServer::findOrCreateSession(const struct sockaddr_in& client_addr) {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
     
-    // 根据客户端地址查找现有会话
+    // Find existing session by client address
     std::string client_key = std::string(inet_ntoa(client_addr.sin_addr)) + ":" + 
                             std::to_string(ntohs(client_addr.sin_port));
     
-    // 简化实现：使用地址作为客户端ID的哈希
+    // Simplified implementation: use address as client ID hash
     ClientId client_id = std::hash<std::string>{}(client_key) % 1000000 + 1;
     
     auto it = sessions_.find(client_id);
     if (it != sessions_.end()) {
-        // 更新端点信息
+        // Update endpoint information
         it->second->setEndpoint(client_addr);
         return it->second;
     }
     
-    // 检查是否超过最大客户端数
+    // Check if maximum client limit is reached
     if (sessions_.size() >= config_->getMaxClients()) {
-        std::cerr << "达到最大客户端数限制: " << config_->getMaxClients() << std::endl;
+        std::cerr << "Maximum client limit reached: " << config_->getMaxClients() << std::endl;
         return nullptr;
     }
     
-    // 创建新会话
+    // Create new session
     SessionPtr session = std::make_shared<ClientSession>(client_id);
     session->setEndpoint(client_addr);
     session->setState(SessionState::CONNECTING);
     
     sessions_[client_id] = session;
     
-    std::cout << "新客户端连接: " << client_key << " (ID: " << client_id << ")" << std::endl;
+    std::cout << "New client connected: " << client_key << " (ID: " << client_id << ")" << std::endl;
     
     return session;
 }
@@ -425,19 +425,19 @@ void VPNServer::removeSession(ClientId client_id) {
     if (it != sessions_.end()) {
         const std::string& virtual_ip = it->second->getVirtualIP();
         
-        // 从路由器中删除客户端路由
+        // Remove client route from router
         if (packet_router_) {
             packet_router_->removeClientRoute(client_id);
         }
         
-        // 从IP映射中删除
+        // Remove from IP mapping
         if (!virtual_ip.empty()) {
             ip_to_client_.erase(virtual_ip);
         }
         
         sessions_.erase(it);
         
-        std::cout << "客户端断开: ID " << client_id << std::endl;
+        std::cout << "Client disconnected: ID " << client_id << std::endl;
     }
 }
 
@@ -454,13 +454,13 @@ void VPNServer::cleanupInactiveSessions() {
         }
     }
     
-    // 清理过期会话
+    // Clean up expired sessions
     for (ClientId client_id : expired_clients) {
         removeSession(client_id);
     }
     
     if (!expired_clients.empty()) {
-        std::cout << "清理了 " << expired_clients.size() << " 个过期会话" << std::endl;
+        std::cout << "Cleaned up " << expired_clients.size() << " expired sessions" << std::endl;
     }
 }
 
@@ -476,8 +476,8 @@ void VPNServer::routePacketToClient(const uint8_t* data, size_t length,
         return;
     }
     
-    // 这里需要实现加密和UDP发送逻辑
-    // 目前为简化实现，直接发送原始数据
+    // Need to implement encryption and UDP sending logic here
+    // For simplified implementation, send raw data directly
     const struct sockaddr_in& client_addr = session->getEndpoint();
     
     int bytes_sent = sendto(udp_socket_, 
