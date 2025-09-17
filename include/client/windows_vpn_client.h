@@ -113,6 +113,25 @@ public:
      */
     void setLogCallback(std::function<void(const std::string&)> callback);
 
+    /**
+     * @brief 带宽测试结果
+     */
+    struct BandwidthTestResult {
+        double upload_mbps = 0.0;
+        double download_mbps = 0.0;
+        double latency_ms = 0.0;
+        bool success = false;
+        std::string error_message;
+    };
+
+    /**
+     * @brief 执行带宽测试
+     * @param test_duration_seconds 测试持续时间（秒）
+     * @param test_size_mb 测试数据大小（MB）
+     * @return 测试结果
+     */
+    BandwidthTestResult performBandwidthTest(uint32_t test_duration_seconds = 10, uint32_t test_size_mb = 10);
+
 private:
     // 连接管理
     void connectionThreadFunc();

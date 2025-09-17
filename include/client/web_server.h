@@ -78,6 +78,7 @@ private:
     std::string apiSetConfig(const std::string& body);
     std::string apiGetLogs();
     std::string apiTestTap();
+    std::string apiBandwidthTest();
     
     // 静态文件服务
     std::string serveStaticFile(const std::string& path);

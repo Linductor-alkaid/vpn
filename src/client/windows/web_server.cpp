@@ -197,6 +197,9 @@ std::string SimpleWebServer::handleAPI(const std::string& path, const std::strin
     else if (path == "test-tap" && method == "POST") {
         return apiTestTap();
     }
+    else if (path == "bandwidth-test" && method == "POST") {
+        return apiBandwidthTest();
+    }
     
     return errorResponse("API endpoint not found", 404);
 }
@@ -359,6 +362,36 @@ std::string SimpleWebServer::apiTestTap() {
     return jsonResponse(json.str());
 }
 
+std::string SimpleWebServer::apiBandwidthTest() {
+    std::lock_guard<std::mutex> lock(client_mutex_);
+    
+    if (!vpn_client_) {
+        return errorResponse("No VPN client instance");
+    }
+    
+    addLog("Starting bandwidth test...");
+    
+    // 执行带宽测试
+    auto result = vpn_client_->performBandwidthTest(10, 500); // 10秒，5MB测试
+    
+    std::ostringstream json;
+    json << "{";
+    json << "\"success\": " << (result.success ? "true" : "false") << ",";
+    
+    if (result.success) {
+        json << "\"upload_mbps\": " << std::fixed << std::setprecision(2) << result.upload_mbps << ",";
+        json << "\"download_mbps\": " << std::fixed << std::setprecision(2) << result.download_mbps << ",";
+        json << "\"latency_ms\": " << std::fixed << std::setprecision(1) << result.latency_ms;
+    } else {
+        json << "\"error\": \"" << result.error_message << "\"";
+    }
+    
+    json << "}";
+    
+    addLog("Bandwidth test completed");
+    return jsonResponse(json.str());
+}
+
 std::string SimpleWebServer::serveStaticFile(const std::string& path) {
     // 主页面
     if (path == "/" || path == "/index.html") {
@@ -442,6 +475,25 @@ std::string SimpleWebServer::serveStaticFile(const std::string& path) {
                "            <button class='btn btn-primary' onclick='connect()' id='connect-btn'>连接</button>\n"
                "            <button class='btn btn-danger' onclick='disconnect()' id='disconnect-btn' disabled>断开</button>\n"
                "            <button class='btn btn-secondary' onclick='testTap()'>测试TAP</button>\n"
+               "            <button class='btn btn-secondary' onclick='testBandwidth()' id='bandwidth-btn' disabled>带宽测试</button>\n"
+               "        </div>\n"
+               "        \n"
+               "        <div id='bandwidth-result' style='display: none; background: #e9ecef; padding: 15px; border-radius: 5px; margin: 20px 0;'>\n"
+               "            <h4>带宽测试结果</h4>\n"
+               "            <div style='display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px;'>\n"
+               "                <div class='stat-card'>\n"
+               "                    <div class='stat-value' id='upload-speed'>0</div>\n"
+               "                    <div class='stat-label'>上传速度 (Mbps)</div>\n"
+               "                </div>\n"
+               "                <div class='stat-card'>\n"
+               "                    <div class='stat-value' id='download-speed'>0</div>\n"
+               "                    <div class='stat-label'>下载速度 (Mbps)</div>\n"
+               "                </div>\n"
+               "                <div class='stat-card'>\n"
+               "                    <div class='stat-value' id='latency'>0</div>\n"
+               "                    <div class='stat-label'>延迟 (ms)</div>\n"
+               "                </div>\n"
+               "            </div>\n"
                "        </div>\n"
                "        \n"
                "        <h3>连接日志</h3>\n"
@@ -465,6 +517,7 @@ std::string SimpleWebServer::serveStaticFile(const std::string& path) {
                "                    \n"
                "                    document.getElementById('connect-btn').disabled = isConnected;\n"
                "                    document.getElementById('disconnect-btn').disabled = !isConnected;\n"
+               "                    document.getElementById('bandwidth-btn').disabled = !isConnected;\n"
                "                    \n"
                "                    document.getElementById('bytes-sent').textContent = formatBytes(data.bytes_sent);\n"
                "                    document.getElementById('bytes-received').textContent = formatBytes(data.bytes_received);\n"
@@ -546,6 +599,35 @@ std::string SimpleWebServer::serveStaticFile(const std::string& path) {
                "                    alert(message);\n"
                "                })\n"
                "                .catch(err => alert('TAP测试失败: ' + err));\n"
+               "        }\n"
+               "        \n"
+               "        function testBandwidth() {\n"
+               "            if (!isConnected) {\n"
+               "                alert('请先连接VPN');\n"
+               "                return;\n"
+               "            }\n"
+               "            \n"
+               "            const bandwidthBtn = document.getElementById('bandwidth-btn');\n"
+               "            bandwidthBtn.disabled = true;\n"
+               "            bandwidthBtn.textContent = '测试中...';\n"
+               "            \n"
+               "            fetch('/api/bandwidth-test', {method: 'POST'})\n"
+               "                .then(response => response.json())\n"
+               "                .then(result => {\n"
+               "                    if (result.success) {\n"
+               "                        document.getElementById('upload-speed').textContent = result.upload_mbps.toFixed(2);\n"
+               "                        document.getElementById('download-speed').textContent = result.download_mbps.toFixed(2);\n"
+               "                        document.getElementById('latency').textContent = result.latency_ms.toFixed(1);\n"
+               "                        document.getElementById('bandwidth-result').style.display = 'block';\n"
+               "                    } else {\n"
+               "                        alert('带宽测试失败: ' + (result.error || '未知错误'));\n"
+               "                    }\n"
+               "                })\n"
+               "                .catch(err => alert('带宽测试请求失败: ' + err))\n"
+               "                .finally(() => {\n"
+               "                    bandwidthBtn.disabled = false;\n"
+               "                    bandwidthBtn.textContent = '带宽测试';\n"
+               "                });\n"
                "        }\n"
                "        \n"
                "        function updateLogs() {\n"

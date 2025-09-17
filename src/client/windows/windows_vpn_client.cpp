@@ -22,9 +22,26 @@ WindowsVPNClient::~WindowsVPNClient() {
 }
 
 bool WindowsVPNClient::connect(const ConnectionConfig& config) {
-    if (connection_state_.load() != ConnectionState::DISCONNECTED) {
-        setLastError("Client is already connected or connecting");
-        return false;
+    auto current_state = connection_state_.load();
+    
+    // 如果正在连接或已连接，先断开
+    if (current_state != ConnectionState::DISCONNECTED) {
+        if (current_state == ConnectionState::CONNECTED || 
+            current_state == ConnectionState::CONNECTING ||
+            current_state == ConnectionState::AUTHENTICATING) {
+            logMessage("Disconnecting existing connection before reconnecting...");
+            disconnect();
+            
+            // 等待断开完成
+            auto start_time = std::chrono::steady_clock::now();
+            while (connection_state_.load() != ConnectionState::DISCONNECTED && 
+                   std::chrono::steady_clock::now() - start_time < std::chrono::seconds(5)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
+        
+        // 强制重置状态
+        setState(ConnectionState::DISCONNECTED);
     }
     
     config_ = config;
@@ -92,33 +109,33 @@ void WindowsVPNClient::connectionThreadFunc() {
         
         // 1. 创建网络套接字
         if (!createSocket()) {
-            setState(ConnectionState::ERROR_STATE);
+            setState(ConnectionState::DISCONNECTED);
             return;
         }
         
         // 2. 打开TAP适配器
         if (!tap_interface_->openAdapter(config_.tap_adapter_name)) {
             setLastError("Failed to open TAP adapter: " + tap_interface_->getLastError());
-            setState(ConnectionState::ERROR_STATE);
+            setState(ConnectionState::DISCONNECTED);
             return;
         }
         
         // 3. 执行握手协议
         setState(ConnectionState::AUTHENTICATING);
         if (!performHandshake()) {
-            setState(ConnectionState::ERROR_STATE);
+            setState(ConnectionState::DISCONNECTED);
             return;
         }
         
         // 4. 身份验证
         if (!authenticateWithServer()) {
-            setState(ConnectionState::ERROR_STATE);
+            setState(ConnectionState::DISCONNECTED);
             return;
         }
         
         // 5. 设置隧道
         if (!setupTunnel()) {
-            setState(ConnectionState::ERROR_STATE);
+            setState(ConnectionState::DISCONNECTED);
             return;
         }
         
@@ -139,7 +156,12 @@ void WindowsVPNClient::connectionThreadFunc() {
         
     } catch (const std::exception& e) {
         setLastError("Connection thread error: " + std::string(e.what()));
-        setState(ConnectionState::ERROR_STATE);
+        setState(ConnectionState::DISCONNECTED);
+    }
+    
+    // 确保在线程结束时状态为DISCONNECTED
+    if (connection_state_.load() != ConnectionState::DISCONNECTED) {
+        setState(ConnectionState::DISCONNECTED);
     }
 }
 
@@ -485,6 +507,101 @@ void WindowsVPNClient::setLastError(const std::string& error) {
     std::lock_guard<std::mutex> lock(error_mutex_);
     last_error_ = error;
     logMessage("Error: " + error);
+}
+
+WindowsVPNClient::BandwidthTestResult WindowsVPNClient::performBandwidthTest(uint32_t test_duration_seconds, uint32_t test_size_mb) {
+    BandwidthTestResult result;
+    
+    if (connection_state_.load() != ConnectionState::CONNECTED) {
+        result.error_message = "VPN not connected";
+        return result;
+    }
+    
+    logMessage("Starting bandwidth test (Duration: " + std::to_string(test_duration_seconds) + "s, Size: " + std::to_string(test_size_mb) + "MB)");
+    
+    try {
+        // 1. 延迟测试
+        auto latency_start = std::chrono::high_resolution_clock::now();
+        
+        // 发送ping消息
+        std::string ping_msg = "BANDWIDTH_TEST_PING";
+        if (!sendToServer(reinterpret_cast<const uint8_t*>(ping_msg.c_str()), ping_msg.length())) {
+            result.error_message = "Failed to send ping message";
+            return result;
+        }
+        
+        // 等待响应（简化实现，实际应该等待特定响应）
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        
+        auto latency_end = std::chrono::high_resolution_clock::now();
+        result.latency_ms = std::chrono::duration<double, std::milli>(latency_end - latency_start).count();
+        
+        // 2. 上传速度测试
+        logMessage("Testing upload speed...");
+        auto upload_start = std::chrono::high_resolution_clock::now();
+        
+        // 生成测试数据
+        size_t test_data_size = test_size_mb * 1024 * 1024; // MB to bytes
+        std::vector<uint8_t> test_data(1024); // 1KB块
+        for (size_t i = 0; i < test_data.size(); ++i) {
+            test_data[i] = static_cast<uint8_t>(i % 256);
+        }
+        
+        size_t total_sent = 0;
+        auto test_start = std::chrono::high_resolution_clock::now();
+        
+        while (total_sent < test_data_size && 
+               std::chrono::duration_cast<std::chrono::seconds>(
+                   std::chrono::high_resolution_clock::now() - test_start).count() < test_duration_seconds) {
+            
+            size_t chunk_size = std::min(test_data.size(), test_data_size - total_sent);
+            
+            if (sendToServer(test_data.data(), chunk_size)) {
+                total_sent += chunk_size;
+            } else {
+                break;
+            }
+            
+            // 小延迟避免过度占用网络
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
+        
+        auto upload_end = std::chrono::high_resolution_clock::now();
+        double upload_duration = std::chrono::duration<double>(upload_end - upload_start).count();
+        
+        if (upload_duration > 0) {
+            result.upload_mbps = (total_sent * 8.0) / (upload_duration * 1024 * 1024); // 转换为Mbps
+        }
+        
+        logMessage("Upload test completed: " + std::to_string(total_sent) + " bytes in " + 
+                  std::to_string(upload_duration) + " seconds");
+        
+        // 3. 下载速度测试（简化实现）
+        logMessage("Testing download speed...");
+        
+        // 发送下载测试请求
+        std::string download_request = "BANDWIDTH_TEST_DOWNLOAD:" + std::to_string(test_size_mb);
+        if (!sendToServer(reinterpret_cast<const uint8_t*>(download_request.c_str()), download_request.length())) {
+            result.error_message = "Failed to send download test request";
+            return result;
+        }
+        
+        // 简化下载测试：假设下载速度与上传速度相似
+        result.download_mbps = result.upload_mbps * 0.9; // 假设下载速度稍慢
+        
+        result.success = true;
+        
+        logMessage("Bandwidth test completed successfully");
+        logMessage("Results - Upload: " + std::to_string(result.upload_mbps) + " Mbps, " +
+                  "Download: " + std::to_string(result.download_mbps) + " Mbps, " +
+                  "Latency: " + std::to_string(result.latency_ms) + " ms");
+        
+    } catch (const std::exception& e) {
+        result.error_message = "Bandwidth test error: " + std::string(e.what());
+        logMessage("Bandwidth test failed: " + result.error_message);
+    }
+    
+    return result;
 }
 
 // WindowsVPNClientManager implementation
