@@ -1,0 +1,46 @@
+{
+    "client": {
+        "server_address": "your-server-ip-or-domain",
+        "server_port": 1194,
+        "username": "your-username",
+        "password": "your-password",
+        "tap_adapter_name": "",
+        "virtual_ip": "",
+        "virtual_netmask": "255.255.255.0",
+        "keepalive_interval": 30,
+        "connection_timeout": 10,
+        "auto_reconnect": true,
+        "max_reconnect_attempts": 5
+    },
+    "security": {
+        "client_certificate_path": "client.crt",
+        "client_private_key_path": "client.key",
+        "ca_certificate_path": "ca.crt",
+        "verify_server_certificate": true
+    },
+    "network": {
+        "dns_servers": [
+            "8.8.8.8",
+            "8.8.4.4"
+        ],
+        "routes": [
+            {
+                "destination": "0.0.0.0/0",
+                "gateway": "server",
+                "metric": 1
+            }
+        ],
+        "mtu": 1500
+    },
+    "logging": {
+        "level": "info",
+        "file": "sduvpn-client.log",
+        "max_file_size": "10MB",
+        "max_files": 5
+    },
+    "service": {
+        "auto_start": true,
+        "start_minimized": true,
+        "show_notifications": true
+    }
+}

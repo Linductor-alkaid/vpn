@@ -2,6 +2,10 @@
 #include <cstring>
 #include <iostream>
 
+#if defined(_MSC_VER) && !defined(__INTEL_COMPILER)
+    #include <intrin.h>  // for _umul128
+#endif
+
 // 完整的Curve25519实现
 // 基于RFC 7748标准实现X25519椭圆曲线Diffie-Hellman
 
@@ -16,7 +20,75 @@ namespace curve25519_impl {
 
 // 64位整数类型用于中间计算
 typedef uint64_t limb_t;
-typedef __int128 dlimb_t;  // 双倍精度用于乘法
+
+// 双倍精度类型定义 - 跨平台兼容
+#if defined(_MSC_VER) && !defined(__INTEL_COMPILER)
+    // 前向声明
+    struct dlimb_t;
+    dlimb_t multiply_64x64(uint64_t a, uint64_t b);
+    
+    // MSVC不支持__int128，使用自定义实现
+    struct dlimb_t {
+        uint64_t lo, hi;
+        
+        dlimb_t() : lo(0), hi(0) {}
+        dlimb_t(uint64_t val) : lo(val), hi(0) {}
+        
+        dlimb_t operator+(const dlimb_t& other) const {
+            dlimb_t result;
+            result.lo = lo + other.lo;
+            result.hi = hi + other.hi + (result.lo < lo ? 1 : 0);
+            return result;
+        }
+        
+        dlimb_t& operator+=(const dlimb_t& other) {
+            uint64_t old_lo = lo;
+            lo += other.lo;
+            hi += other.hi + (lo < old_lo ? 1 : 0);
+            return *this;
+        }
+        
+        dlimb_t& operator+=(uint64_t val) {
+            uint64_t old_lo = lo;
+            lo += val;
+            hi += (lo < old_lo ? 1 : 0);
+            return *this;
+        }
+        
+        operator uint64_t() const { return lo; }
+        
+        dlimb_t operator>>(int shift) const {
+            if (shift >= 64) {
+                return dlimb_t(hi >> (shift - 64));
+            } else if (shift == 0) {
+                return *this;
+            } else {
+                return dlimb_t((lo >> shift) | (hi << (64 - shift)));
+            }
+        }
+        
+        dlimb_t operator*(const dlimb_t& other) const {
+            return multiply_64x64(lo, other.lo);  // 简化版本，只处理低64位
+        }
+        
+        dlimb_t operator*(uint64_t val) const {
+            return multiply_64x64(lo, val);
+        }
+    };
+    
+    // 乘法函数实现
+    inline dlimb_t multiply_64x64(uint64_t a, uint64_t b) {
+        dlimb_t result;
+        result.lo = _umul128(a, b, &result.hi);
+        return result;
+    }
+    
+    #define DLIMB_MUL(a, b) multiply_64x64(a, b)
+#else
+    // GCC/Clang支持__int128
+    typedef __int128 dlimb_t;
+    #define DLIMB_MUL(a, b) ((dlimb_t)(a) * (b))
+#endif
 
 // 25.5位limb表示 (每个limb约25或26位)
 static const int LIMBS = 10;
@@ -136,13 +208,13 @@ void fe_mul(limb_t out[LIMBS], const limb_t a[LIMBS], const limb_t b[LIMBS]) {
     // 多项式乘法
     for (int i = 0; i < LIMBS; ++i) {
         for (int j = 0; j < LIMBS; ++j) {
-            temp[i + j] += (dlimb_t)a[i] * b[j];
+            temp[i + j] += DLIMB_MUL(a[i], b[j]);
         }
     }
     
     // 归约模 2^255-19
     for (int i = 10; i < 19; ++i) {
-        temp[i - 10] += 19 * temp[i];
+        temp[i - 10] += dlimb_t(19) * dlimb_t(temp[i]);
     }
     
     // 进位处理
@@ -161,7 +233,7 @@ void fe_sq(limb_t out[LIMBS], const limb_t a[LIMBS]) {
 
 // 条件交换 (常时间)
 void fe_cswap(limb_t a[LIMBS], limb_t b[LIMBS], int swap) {
-    limb_t mask = -(limb_t)swap;
+    limb_t mask = (limb_t)(0 - (limb_t)swap);  // 避免对无符号类型使用负号
     for (int i = 0; i < LIMBS; ++i) {
         limb_t x = mask & (a[i] ^ b[i]);
         a[i] ^= x;
