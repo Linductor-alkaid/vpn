@@ -38,8 +38,6 @@ if(TARGET sduvpn_crypto)
         # 创建密钥派生测试向量可执行文件
         add_executable(test_key_derivation_vectors test_key_derivation_vectors.cpp)
         
-        # 创建HKDF调试测试
-        add_executable(debug_hkdf debug_hkdf.cpp)
     endif()
     
     # 链接加密库
@@ -79,15 +77,7 @@ if(TARGET sduvpn_crypto)
                 gtest_main
         )
         
-        # debug_hkdf 仅在Linux平台上构建
-        if(TARGET debug_hkdf)
-            target_link_libraries(debug_hkdf 
-                PRIVATE 
-                    sduvpn_crypto
-                    gtest
-                    gtest_main
-            )
-        endif()
+
     endif()
     
     # 设置目标属性
@@ -128,15 +118,6 @@ if(TARGET sduvpn_crypto)
             OUTPUT_NAME "test_key_derivation_vectors"
         )
         
-        # debug_hkdf 目标属性设置 (仅在Linux平台)
-        if(TARGET debug_hkdf)
-            set_target_properties(debug_hkdf PROPERTIES
-                CXX_STANDARD 17
-                CXX_STANDARD_REQUIRED ON
-                CXX_EXTENSIONS OFF
-                OUTPUT_NAME "debug_hkdf"
-            )
-        endif()
     endif()
     
     # 包含目录
@@ -167,13 +148,6 @@ if(TARGET sduvpn_crypto)
                 ${CMAKE_SOURCE_DIR}/include
         )
         
-        # debug_hkdf 包含目录设置 (仅在Linux平台)
-        if(TARGET debug_hkdf)
-            target_include_directories(debug_hkdf 
-                PRIVATE 
-                    ${CMAKE_SOURCE_DIR}/include
-            )
-        endif()
     endif()
     
     # Windows 平台特定设置
