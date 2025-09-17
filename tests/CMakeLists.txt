@@ -74,10 +74,85 @@ else()
 endif()
 
 # =============================================================================
+# 服务器组件测试
+# =============================================================================
+# 添加服务器组件测试（需要先编译服务器源文件）
+add_executable(test_server_components test_server_components.cpp)
+
+# 添加服务器源文件（排除main.cpp）
+set(SERVER_TEST_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/server/server_config.cpp
+    ${CMAKE_SOURCE_DIR}/src/server/client_session.cpp
+    ${CMAKE_SOURCE_DIR}/src/server/packet_router.cpp
+    # 注意：不包含vpn_server.cpp和main.cpp，因为它们包含平台特定代码
+)
+
+target_sources(test_server_components PRIVATE ${SERVER_TEST_SOURCES})
+
+# 链接库
+target_link_libraries(test_server_components
+    PRIVATE
+        sduvpn_crypto
+        ${THIRD_PARTY_LIBRARIES}
+)
+
+# 设置目标属性
+set_target_properties(test_server_components PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+    OUTPUT_NAME "test_server_components"
+)
+
+# 包含目录
+target_include_directories(test_server_components
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/src
+)
+
+# 编译定义
+target_compile_definitions(test_server_components
+    PRIVATE
+        SDUVPN_SERVER_TEST
+        SDUVPN_USE_JSON  # 启用JSON支持用于测试
+)
+
+# Windows 平台特定设置
+if(WIN32)
+    set_target_properties(test_server_components PROPERTIES
+        WIN32_EXECUTABLE FALSE
+    )
+    
+    if(MSVC)
+        target_compile_options(test_server_components PRIVATE 
+            $<$<CONFIG:Release>:/MD>
+            $<$<CONFIG:Debug>:/MDd>
+        )
+    endif()
+endif()
+
+# 设置输出目录
+set_target_properties(test_server_components PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/tests
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/bin/tests
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/bin/tests
+)
+
+message(STATUS "Server components test will be built")
+
+# =============================================================================
 # 安装配置
 # =============================================================================
 if(TARGET test_crypto)
     install(TARGETS test_crypto
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}/tests
+        COMPONENT Tests
+    )
+endif()
+
+if(TARGET test_server_components)
+    install(TARGETS test_server_components
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}/tests
         COMPONENT Tests
     )

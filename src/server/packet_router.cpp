@@ -89,6 +89,15 @@ void PacketRouter::removeClientRoute(ClientId client_id) {
             std::cout << "Remove client route: " << virtual_ip << " -> client " << client_id << std::endl;
         }
     }
+    
+    // 额外的安全措施：遍历ip_to_client_映射，删除指向该客户端的所有条目
+    for (auto it = ip_to_client_.begin(); it != ip_to_client_.end(); ) {
+        if (it->second == client_id) {
+            it = ip_to_client_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 bool PacketRouter::addStaticRoute(const RouteEntry& route) {
