@@ -319,27 +319,41 @@ std::string SimpleWebServer::apiConnect(const std::string& body) {
     
     bool success = vpn_client_->connect(config);
     
-    // 如果连接成功，保存配置
+    // 如果连接成功，保存或更新配置
     if (success && config_manager_) {
         std::lock_guard<std::mutex> config_lock(config_mutex_);
         
-        // 创建配置文件
-        VPNConnectionProfile profile;
-        profile.name = config.server_address; // 使用服务器地址作为默认名称
-        profile.server_address = config.server_address;
-        profile.server_port = config.server_port;
-        profile.username = config.username;
-        profile.password = config.password;
-        profile.created_time = getCurrentTime();
-        profile.last_connected = getCurrentTime();
-        profile.connection_count = 1;
+        // 检查是否已存在相同的登录数据
+        auto existing_profile = config_manager_->findProfileByLoginData(
+            config.server_address, config.username, config.password);
         
-        // 生成唯一名称
-        profile.name = config_manager_->generateUniqueName(profile.name);
-        
-        // 保存配置
-        if (config_manager_->saveProfile(profile)) {
-            addLog("Configuration saved: " + profile.name);
+        if (existing_profile) {
+            // 更新现有配置的统计信息
+            existing_profile->last_connected = getCurrentTime();
+            existing_profile->connection_count++;
+            
+            if (config_manager_->saveProfile(*existing_profile)) {
+                addLog("Updated existing configuration: " + existing_profile->name);
+            }
+        } else {
+            // 创建新配置文件
+            VPNConnectionProfile profile;
+            profile.name = config.server_address; // 使用服务器地址作为默认名称
+            profile.server_address = config.server_address;
+            profile.server_port = config.server_port;
+            profile.username = config.username;
+            profile.password = config.password;
+            profile.created_time = getCurrentTime();
+            profile.last_connected = getCurrentTime();
+            profile.connection_count = 1;
+            
+            // 生成唯一名称
+            profile.name = config_manager_->generateUniqueName(profile.name);
+            
+            // 保存新配置
+            if (config_manager_->saveProfile(profile)) {
+                addLog("New configuration saved: " + profile.name);
+            }
         }
     }
     

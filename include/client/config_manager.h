@@ -145,6 +145,18 @@ public:
      */
     std::string generateUniqueName(const std::string& base_name);
 
+    /**
+     * @brief 查找具有相同登录数据的配置
+     * @param server_address 服务器地址
+     * @param username 用户名
+     * @param password 密码
+     * @return 匹配的配置，没有则返回nullptr
+     */
+    std::unique_ptr<VPNConnectionProfile> findProfileByLoginData(
+        const std::string& server_address, 
+        const std::string& username, 
+        const std::string& password);
+
 private:
     // 加密相关
     std::string encryptPassword(const std::string& password);

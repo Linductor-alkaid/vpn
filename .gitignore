@@ -6,12 +6,11 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 Makefile
-*.cmake
+installer
 
 # 编译输出
 *.o
 *.obj
-*.exe
 *.out
 *.app
 *.dll

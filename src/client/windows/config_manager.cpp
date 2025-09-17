@@ -369,6 +369,24 @@ std::string ConfigManager::sanitizeFileName(const std::string& name) {
     return sanitized;
 }
 
+std::unique_ptr<VPNConnectionProfile> ConfigManager::findProfileByLoginData(
+    const std::string& server_address, 
+    const std::string& username, 
+    const std::string& password) {
+    
+    auto all_profiles = loadAllProfiles();
+    
+    for (const auto& profile : all_profiles) {
+        if (profile.server_address == server_address && 
+            profile.username == username && 
+            profile.password == password) {
+            return std::make_unique<VPNConnectionProfile>(profile);
+        }
+    }
+    
+    return nullptr;
+}
+
 // 配置辅助函数实现将在需要时添加
 
 } // namespace client
