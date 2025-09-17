@@ -1,0 +1,164 @@
+# ==================== C++ 构建文件 ====================
+# CMake构建目录
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+
+# 编译输出
+*.o
+*.obj
+*.exe
+*.out
+*.app
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+
+# 调试文件
+*.pdb
+*.ilk
+*.exp
+*.map
+
+# ==================== IDE 和编辑器 ====================
+# Visual Studio
+.vs/
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+*.suo
+*.user
+*.aps
+*.ncb
+*.opensdf
+*.sdf
+*.cachefile
+*.VC.db
+*.VC.VC.opendb
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# CLion
+.idea/
+cmake-build-*/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# ==================== 系统文件 ====================
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ==================== 依赖和第三方库 ====================
+# 第三方库（如果不想提交到git）
+# third_party/
+# vendor/
+# libs/
+
+# 包管理器
+vcpkg_installed/
+conan/
+conan_toolchain.cmake
+
+# ==================== 日志和临时文件 ====================
+*.log
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+
+# ==================== 测试和覆盖率 ====================
+# 测试输出
+test_results/
+coverage/
+*.gcov
+*.gcda
+*.gcno
+
+# ==================== 文档生成 ====================
+docs/build/
+docs/_build/
+docs/html/
+docs/latex/
+
+# ==================== 其他 ====================
+# 用户特定文件
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# 备份文件
+*~
+*.bak
+*.swp
+*.swo
+
+# 临时文件
+*.tmp
+*.temp
+*.log
+
