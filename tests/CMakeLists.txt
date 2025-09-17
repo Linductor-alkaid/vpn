@@ -19,10 +19,60 @@ if(TARGET sduvpn_crypto)
     # 创建加密库测试可执行文件
     add_executable(test_crypto test_crypto.cpp)
     
+    # 创建密钥交换测试可执行文件
+    add_executable(test_key_exchange test_key_exchange.cpp)
+    
+    # 创建ECDH性能测试可执行文件
+    add_executable(test_ecdh_performance test_ecdh_performance.cpp)
+    
+    # 创建SHA-256标准测试向量可执行文件
+    add_executable(test_sha256_vectors test_sha256_vectors.cpp)
+    
+    # 创建密钥派生测试向量可执行文件
+    add_executable(test_key_derivation_vectors test_key_derivation_vectors.cpp)
+    
+    # 创建HKDF调试测试
+    add_executable(debug_hkdf debug_hkdf.cpp)
+    
     # 链接加密库
     target_link_libraries(test_crypto 
         PRIVATE 
             sduvpn_crypto
+    )
+    
+    target_link_libraries(test_key_exchange 
+        PRIVATE 
+            sduvpn_crypto
+            gtest
+            gtest_main
+    )
+    
+    target_link_libraries(test_ecdh_performance 
+        PRIVATE 
+            sduvpn_crypto
+            gtest
+            gtest_main
+    )
+    
+    target_link_libraries(test_sha256_vectors 
+        PRIVATE 
+            sduvpn_crypto
+            gtest
+            gtest_main
+    )
+    
+    target_link_libraries(test_key_derivation_vectors 
+        PRIVATE 
+            sduvpn_crypto
+            gtest
+            gtest_main
+    )
+    
+    target_link_libraries(debug_hkdf 
+        PRIVATE 
+            sduvpn_crypto
+            gtest
+            gtest_main
     )
     
     # 设置目标属性
@@ -33,8 +83,68 @@ if(TARGET sduvpn_crypto)
         OUTPUT_NAME "test_crypto"
     )
     
+    set_target_properties(test_key_exchange PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+        OUTPUT_NAME "test_key_exchange"
+    )
+    
+    set_target_properties(test_ecdh_performance PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+        OUTPUT_NAME "test_ecdh_performance"
+    )
+    
+    set_target_properties(test_sha256_vectors PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+        OUTPUT_NAME "test_sha256_vectors"
+    )
+    
+    set_target_properties(test_key_derivation_vectors PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+        OUTPUT_NAME "test_key_derivation_vectors"
+    )
+    
+    set_target_properties(debug_hkdf PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+        OUTPUT_NAME "debug_hkdf"
+    )
+    
     # 包含目录
     target_include_directories(test_crypto 
+        PRIVATE 
+            ${CMAKE_SOURCE_DIR}/include
+    )
+    
+    target_include_directories(test_key_exchange 
+        PRIVATE 
+            ${CMAKE_SOURCE_DIR}/include
+    )
+    
+    target_include_directories(test_ecdh_performance 
+        PRIVATE 
+            ${CMAKE_SOURCE_DIR}/include
+    )
+    
+    target_include_directories(test_sha256_vectors 
+        PRIVATE 
+            ${CMAKE_SOURCE_DIR}/include
+    )
+    
+    target_include_directories(test_key_derivation_vectors 
+        PRIVATE 
+            ${CMAKE_SOURCE_DIR}/include
+    )
+    
+    target_include_directories(debug_hkdf 
         PRIVATE 
             ${CMAKE_SOURCE_DIR}/include
     )

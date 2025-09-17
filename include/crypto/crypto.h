@@ -33,7 +33,7 @@ constexpr size_t AES_GCM_IV_SIZE = 12;         // GCM模式IV长度
 constexpr size_t AES_GCM_TAG_SIZE = 16;        // GCM认证标签长度
 constexpr size_t SHA_256_HASH_SIZE = 32;       // SHA-256哈希长度
 constexpr size_t ECDH_PRIVATE_KEY_SIZE = 32;   // ECDH私钥长度
-constexpr size_t ECDH_PUBLIC_KEY_SIZE = 64;    // ECDH公钥长度(未压缩)
+constexpr size_t ECDH_PUBLIC_KEY_SIZE = 32;    // ECDH公钥长度(Curve25519压缩格式)
 constexpr size_t ECDH_SHARED_SECRET_SIZE = 32; // ECDH共享密钥长度
 
 // =============================================================================
@@ -280,6 +280,56 @@ public:
         const uint8_t* info, size_t info_len,
         size_t okm_len,
         uint8_t* okm
+    );
+    
+    /**
+     * 便利函数：使用密码字符串进行PBKDF2
+     * @param password 密码字符串
+     * @param salt 盐值
+     * @param salt_len 盐值长度
+     * @param iterations 迭代次数
+     * @param key_len 输出密钥长度
+     * @param derived_key 派生密钥输出缓冲区
+     * @return 错误码
+     */
+    static CryptoError pbkdf2_password(
+        const std::string& password,
+        const uint8_t* salt, size_t salt_len,
+        uint32_t iterations,
+        size_t key_len,
+        uint8_t* derived_key
+    );
+    
+    /**
+     * 便利函数：使用字符串信息进行HKDF
+     * @param ikm 输入密钥材料
+     * @param ikm_len 输入密钥材料长度
+     * @param salt 盐值(可选)
+     * @param salt_len 盐值长度
+     * @param info 信息字符串
+     * @param okm_len 输出密钥长度
+     * @param okm 输出密钥缓冲区
+     * @return 错误码
+     */
+    static CryptoError hkdf_info(
+        const uint8_t* ikm, size_t ikm_len,
+        const uint8_t* salt, size_t salt_len,
+        const std::string& info,
+        size_t okm_len,
+        uint8_t* okm
+    );
+    
+    /**
+     * 安全的密钥比较函数
+     * @param derived_key 派生的密钥
+     * @param expected_key 期望的密钥
+     * @param key_len 密钥长度
+     * @return true如果密钥相同
+     */
+    static bool verify_derived_key(
+        const uint8_t* derived_key,
+        const uint8_t* expected_key,
+        size_t key_len
     );
 };
 

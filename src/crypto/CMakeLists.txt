@@ -8,6 +8,10 @@ set(CRYPTO_SOURCES
     secure_random.cpp
     crypto_utils.cpp
     crypto_context.cpp
+    ecdh.cpp
+    key_derivation.cpp
+    sha256.cpp
+    key_exchange_protocol.cpp
 )
 
 # =============================================================================
