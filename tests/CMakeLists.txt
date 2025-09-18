@@ -203,6 +203,7 @@ target_sources(test_server_components PRIVATE ${SERVER_TEST_SOURCES})
 # 链接库
 target_link_libraries(test_server_components
     PRIVATE
+        sduvpn_common
         sduvpn_crypto
         ${THIRD_PARTY_LIBRARIES}
 )

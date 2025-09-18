@@ -9,8 +9,7 @@ namespace server {
 ClientSession::ClientSession(ClientId client_id) 
     : client_id_(client_id)
     , last_activity_(std::chrono::steady_clock::now())
-    , authenticated_(false)
-    , crypto_initialized_(false) {
+    , authenticated_(false) {
     
     std::memset(&endpoint_, 0, sizeof(endpoint_));
     stats_.created_time = std::chrono::steady_clock::now();
@@ -18,8 +17,8 @@ ClientSession::ClientSession(ClientId client_id)
 }
 
 ClientSession::~ClientSession() {
-    // 清理加密上下文
-    crypto_context_.reset();
+    // 清理安全协议上下文
+    secure_context_.reset();
 }
 
 void ClientSession::setEndpoint(const struct sockaddr_in& endpoint) {
@@ -68,80 +67,119 @@ bool ClientSession::authenticate(const std::string& username,
     return true;
 }
 
-bool ClientSession::initializeCrypto(const std::vector<uint8_t>& shared_key) {
+bool ClientSession::initializeSecureProtocol() {
     try {
-        // 创建加密上下文
-        crypto_context_ = std::make_unique<crypto::CryptoContext>();
+        secure_context_ = std::make_unique<common::SecureProtocolContext>();
+        bool success = secure_context_->initializeAsServer();
         
-        // 初始化加密上下文
-        // 这里需要根据实际的CryptoContext接口进行调整
-        if (shared_key.size() >= 32) {
-            // 使用前32字节作为密钥
-            std::vector<uint8_t> key(shared_key.begin(), shared_key.begin() + 32);
-            
-            // 生成初始化向量（这里简化处理，实际应该使用随机值）
-            std::vector<uint8_t> iv(16, 0);
-            for (size_t i = 0; i < iv.size() && i < shared_key.size() - 32; ++i) {
-                iv[i] = shared_key[32 + i];
-            }
-            
-            // 初始化加密上下文（这里需要根据实际接口调整）
-            crypto_initialized_ = true;
+        if (success) {
+            setState(SessionState::HANDSHAKING);
             updateLastActivity();
-            
-            return true;
         }
         
-        return false;
+        return success;
         
     } catch (const std::exception& e) {
-        std::cerr << "Encryption initialization failed: " << e.what() << std::endl;
-        crypto_context_.reset();
-        crypto_initialized_ = false;
+        std::cerr << "Secure protocol initialization failed: " << e.what() << std::endl;
+        secure_context_.reset();
         return false;
     }
 }
 
-bool ClientSession::encryptData(const std::vector<uint8_t>& plaintext, 
-                               std::vector<uint8_t>& ciphertext) {
-    if (!crypto_initialized_ || !crypto_context_) {
+bool ClientSession::handleHandshakeInit(const common::HandshakeInitMessage& init_message,
+                                       common::HandshakeResponseMessage& response_message) {
+    if (!secure_context_) {
         return false;
     }
     
-    try {
-        // 这里需要根据实际的CryptoContext接口进行加密
-        // 目前为简化实现，只是复制数据
-        ciphertext = plaintext;
-        
-        updateSendStats(ciphertext.size());
+    bool success = secure_context_->handleHandshakeInit(init_message, response_message);
+    if (success) {
         updateLastActivity();
-        
-        return true;
-        
-    } catch (const std::exception& e) {
-        std::cerr << "Data encryption failed: " << e.what() << std::endl;
-        return false;
     }
+    
+    return success;
 }
 
-bool ClientSession::decryptData(const std::vector<uint8_t>& ciphertext, 
-                               std::vector<uint8_t>& plaintext) {
-    if (!crypto_initialized_ || !crypto_context_) {
+bool ClientSession::completeHandshake(const common::HandshakeCompleteMessage& complete_message) {
+    if (!secure_context_) {
+        return false;
+    }
+    
+    bool success = secure_context_->completeHandshake(complete_message);
+    if (success) {
+        setState(SessionState::ACTIVE);
+        updateLastActivity();
+    }
+    
+    return success;
+}
+
+bool ClientSession::isHandshakeComplete() const {
+    return secure_context_ && secure_context_->isHandshakeComplete();
+}
+
+std::unique_ptr<common::SecureMessage> ClientSession::createSecureMessage(common::MessageType type) {
+    if (!secure_context_) {
+        return nullptr;
+    }
+    
+    return secure_context_->createMessage(type);
+}
+
+bool ClientSession::encryptMessage(common::SecureMessage& message) {
+    if (!secure_context_) {
+        return false;
+    }
+    
+    bool success = secure_context_->encryptMessage(message);
+    if (success) {
+        updateLastActivity();
+    }
+    
+    return success;
+}
+
+bool ClientSession::decryptMessage(common::SecureMessage& message) {
+    if (!secure_context_) {
+        return false;
+    }
+    
+    bool success = secure_context_->decryptMessage(message);
+    if (success) {
+        updateLastActivity();
+    }
+    
+    return success;
+}
+
+bool ClientSession::processSecureMessage(const uint8_t* buffer, size_t buffer_size,
+                                        std::unique_ptr<common::SecureMessage>& message) {
+    if (!buffer || buffer_size == 0) {
         return false;
     }
     
     try {
-        // 这里需要根据实际的CryptoContext接口进行解密
-        // 目前为简化实现，只是复制数据
-        plaintext = ciphertext;
+        message = std::make_unique<common::SecureMessage>();
+        if (!message->deserialize(buffer, buffer_size)) {
+            message.reset();
+            return false;
+        }
         
-        updateReceiveStats(plaintext.size());
+        // 如果消息是加密的，尝试解密
+        if (message->isEncrypted() && secure_context_) {
+            if (!secure_context_->decryptMessage(*message)) {
+                message.reset();
+                return false;
+            }
+        }
+        
+        updateReceiveStats(buffer_size);
         updateLastActivity();
-        
         return true;
         
     } catch (const std::exception& e) {
-        std::cerr << "Data decryption failed: " << e.what() << std::endl;
+        std::cerr << "Message processing failed: " << e.what() << std::endl;
+        message.reset();
         return false;
     }
 }

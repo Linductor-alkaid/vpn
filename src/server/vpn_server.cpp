@@ -319,38 +319,301 @@ void VPNServer::handleClientMessage(const struct sockaddr_in& client_addr,
     // Update session activity time
     session->updateLastActivity();
     
-    // This should implement specific message processing logic
-    // including authentication, key exchange, packet decryption, etc.
+    // 处理安全消息
+    std::unique_ptr<common::SecureMessage> message;
+    if (!session->processSecureMessage(data, length, message)) {
+        std::cerr << "Failed to process secure message from client " 
+                  << session->getClientId() << std::endl;
+        return;
+    }
     
-    // For simplified implementation, directly process data as IP packets
-    if (session->getState() == SessionState::ACTIVE) {
-        // Use router to process packets
-        auto routing_result = packet_router_->routePacket(data, length);
+    // 根据消息类型处理
+    switch (message->getType()) {
+        case common::MessageType::HANDSHAKE_INIT:
+            handleHandshakeInit(session, message.get());
+            break;
+            
+        case common::MessageType::HANDSHAKE_COMPLETE:
+            handleHandshakeComplete(session, message.get());
+            break;
+            
+        case common::MessageType::AUTH_REQUEST:
+            handleAuthRequest(session, message.get());
+            break;
+            
+        case common::MessageType::DATA_PACKET:
+            handleDataPacket(session, message.get());
+            break;
+            
+        case common::MessageType::KEEPALIVE:
+            handleKeepAlive(session, message.get());
+            break;
+            
+        case common::MessageType::DISCONNECT:
+            handleDisconnect(session, message.get());
+            break;
+            
+        default:
+            std::cerr << "Unknown message type: " 
+                      << static_cast<int>(message->getType()) << std::endl;
+            break;
+    }
+}
+
+void VPNServer::handleHandshakeInit(SessionPtr session, const common::SecureMessage* message) {
+    if (!session || !message) {
+        return;
+    }
+    
+    std::cout << "Handling handshake init from client " << session->getClientId() << std::endl;
+    
+    // 初始化安全协议上下文
+    if (!session->initializeSecureProtocol()) {
+        std::cerr << "Failed to initialize secure protocol for client " 
+                  << session->getClientId() << std::endl;
+        return;
+    }
+    
+    // 解析握手初始化消息
+    auto payload = message->getPayload();
+    if (payload.second < sizeof(common::HandshakeInitMessage)) {
+        std::cerr << "Invalid handshake init message size" << std::endl;
+        return;
+    }
+    
+    const common::HandshakeInitMessage* init_msg = 
+        reinterpret_cast<const common::HandshakeInitMessage*>(payload.first);
+    
+    // 处理握手初始化
+    common::HandshakeResponseMessage response_msg;
+    if (!session->handleHandshakeInit(*init_msg, response_msg)) {
+        std::cerr << "Failed to handle handshake init" << std::endl;
+        return;
+    }
+    
+    // 创建响应消息
+    auto response = session->createSecureMessage(common::MessageType::HANDSHAKE_RESPONSE);
+    if (!response) {
+        std::cerr << "Failed to create handshake response message" << std::endl;
+        return;
+    }
+    
+    response->setPayload(reinterpret_cast<const uint8_t*>(&response_msg), 
+                        sizeof(response_msg));
+    
+    // 发送响应
+    sendSecureMessage(session, std::move(response));
+}
+
+void VPNServer::handleHandshakeComplete(SessionPtr session, const common::SecureMessage* message) {
+    if (!session || !message) {
+        return;
+    }
+    
+    std::cout << "Handling handshake complete from client " << session->getClientId() << std::endl;
+    
+    // 解析握手完成消息
+    auto payload = message->getPayload();
+    if (payload.second < sizeof(common::HandshakeCompleteMessage)) {
+        std::cerr << "Invalid handshake complete message size" << std::endl;
+        return;
+    }
+    
+    const common::HandshakeCompleteMessage* complete_msg = 
+        reinterpret_cast<const common::HandshakeCompleteMessage*>(payload.first);
+    
+    // 完成握手
+    if (!session->completeHandshake(*complete_msg)) {
+        std::cerr << "Failed to complete handshake" << std::endl;
+        return;
+    }
+    
+    std::cout << "Handshake completed successfully for client " 
+              << session->getClientId() << std::endl;
+}
+
+void VPNServer::handleAuthRequest(SessionPtr session, const common::SecureMessage* message) {
+    if (!session || !message) {
+        return;
+    }
+    
+    std::cout << "Handling auth request from client " << session->getClientId() << std::endl;
+    
+    // 简化的认证处理
+    if (session->authenticate("default_user", "default_pass", "SDUVPN Client v1.0")) {
+        // 分配虚拟IP
+        std::string virtual_ip = "10.8.0." + std::to_string(session->getClientId() + 1);
+        session->assignVirtualIP(virtual_ip);
         
-        switch (routing_result.action) {
-            case PacketRouter::RoutingResult::TO_CLIENT:
-                if (routing_result.target_session) {
-                // Forward to target client
-                // Need to implement encryption and sending logic here
-                }
-                break;
-                
-            case PacketRouter::RoutingResult::TO_TUN:
-                // Write to TUN interface
-                if (tun_interface_) {
-                    tun_interface_->writePacket(data, length);
-                }
-                break;
-                
-            case PacketRouter::RoutingResult::BROADCAST:
-                // Broadcast to all clients
-                broadcastPacket(data, length, session->getClientId());
-                break;
-                
-            case PacketRouter::RoutingResult::DROP:
-            default:
-                // Drop packet
-                break;
+        // 创建认证响应
+        auto response = session->createSecureMessage(common::MessageType::AUTH_RESPONSE);
+        if (response) {
+            std::string auth_response = "{\"status\":\"success\",\"virtual_ip\":\"" + virtual_ip + "\"}";
+            response->setPayload(reinterpret_cast<const uint8_t*>(auth_response.c_str()), 
+                               auth_response.length());
+            
+            sendSecureMessage(session, std::move(response));
+        }
+        
+        std::cout << "Client " << session->getClientId() 
+                  << " authenticated successfully, assigned IP: " << virtual_ip << std::endl;
+    } else {
+        // 认证失败
+        auto response = session->createSecureMessage(common::MessageType::ERROR_RESPONSE);
+        if (response) {
+            std::string error_response = "{\"error\":\"authentication_failed\"}";
+            response->setPayload(reinterpret_cast<const uint8_t*>(error_response.c_str()), 
+                               error_response.length());
+            
+            sendSecureMessage(session, std::move(response));
+        }
+        
+        std::cerr << "Authentication failed for client " << session->getClientId() << std::endl;
+    }
+}
+
+void VPNServer::handleDataPacket(SessionPtr session, const common::SecureMessage* message) {
+    if (!session || !message || session->getState() != SessionState::ACTIVE) {
+        return;
+    }
+    
+    // 获取解密后的数据包
+    auto payload = message->getPayload();
+    if (payload.first && payload.second > 0) {
+        // 使用路由器处理数据包
+        if (packet_router_) {
+            auto routing_result = packet_router_->routePacket(payload.first, payload.second);
+            
+            switch (routing_result.action) {
+                case PacketRouter::RoutingResult::TO_CLIENT:
+                    if (routing_result.target_session) {
+                        // 转发到目标客户端（需要重新加密）
+                        forwardPacketToClient(routing_result.target_session, payload.first, payload.second);
+                    }
+                    break;
+                    
+                case PacketRouter::RoutingResult::TO_TUN:
+                    // 写入TUN接口
+                    if (tun_interface_) {
+                        tun_interface_->writePacket(payload.first, payload.second);
+                    }
+                    break;
+                    
+                case PacketRouter::RoutingResult::BROADCAST:
+                    // 广播到所有客户端
+                    broadcastEncryptedPacket(payload.first, payload.second, session->getClientId());
+                    break;
+                    
+                case PacketRouter::RoutingResult::DROP:
+                default:
+                    // 丢弃数据包
+                    break;
+            }
+        }
+    }
+}
+
+void VPNServer::handleKeepAlive(SessionPtr session, const common::SecureMessage* message) {
+    if (!session || !message) {
+        return;
+    }
+    
+    // 更新活跃时间（已在processSecureMessage中处理）
+    // 发送keepalive响应
+    auto response = session->createSecureMessage(common::MessageType::KEEPALIVE);
+    if (response) {
+        sendSecureMessage(session, std::move(response));
+    }
+}
+
+void VPNServer::handleDisconnect(SessionPtr session, const common::SecureMessage* message) {
+    if (!session || !message) {
+        return;
+    }
+    
+    std::cout << "Client " << session->getClientId() << " requested disconnect" << std::endl;
+    
+    session->setState(SessionState::DISCONNECTING);
+    
+    // 发送断开连接确认
+    auto response = session->createSecureMessage(common::MessageType::DISCONNECT);
+    if (response) {
+        sendSecureMessage(session, std::move(response));
+    }
+    
+    // 标记为断开连接
+    session->setState(SessionState::DISCONNECTED);
+}
+
+bool VPNServer::sendSecureMessage(SessionPtr session, std::unique_ptr<common::SecureMessage> message) {
+    if (!session || !message) {
+        return false;
+    }
+    
+    // 如果需要加密且握手已完成
+    if (message->getType() != common::MessageType::HANDSHAKE_INIT &&
+        message->getType() != common::MessageType::HANDSHAKE_RESPONSE &&
+        session->isHandshakeComplete()) {
+        
+        if (!session->encryptMessage(*message)) {
+            std::cerr << "Failed to encrypt message" << std::endl;
+            return false;
+        }
+    }
+    
+    // 序列化消息
+    uint8_t buffer[common::MAX_PACKET_SIZE];
+    size_t actual_size;
+    
+    if (!message->serialize(buffer, sizeof(buffer), &actual_size)) {
+        std::cerr << "Failed to serialize message" << std::endl;
+        return false;
+    }
+    
+    // 发送UDP数据包
+    const struct sockaddr_in& client_addr = session->getEndpoint();
+    int bytes_sent = sendto(udp_socket_, 
+                           reinterpret_cast<const char*>(buffer), 
+                           static_cast<int>(actual_size), 0,
+                           reinterpret_cast<const struct sockaddr*>(&client_addr),
+                           sizeof(client_addr));
+    
+    if (bytes_sent > 0) {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_.bytes_sent += bytes_sent;
+        stats_.packets_sent++;
+        
+        session->updateSendStats(bytes_sent);
+        return true;
+    }
+    
+    return false;
+}
+
+void VPNServer::forwardPacketToClient(SessionPtr target_session, const uint8_t* data, size_t length) {
+    if (!target_session || !data || length == 0) {
+        return;
+    }
+    
+    // 创建数据包消息
+    auto message = target_session->createSecureMessage(common::MessageType::DATA_PACKET);
+    if (!message) {
+        return;
+    }
+    
+    message->setPayload(data, length);
+    sendSecureMessage(target_session, std::move(message));
+}
+
+void VPNServer::broadcastEncryptedPacket(const uint8_t* data, size_t length, ClientId exclude_client) {
+    if (!data || length == 0) {
+        return;
+    }
+    
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    for (const auto& pair : sessions_) {
+        if (pair.first != exclude_client && pair.second->getState() == SessionState::ACTIVE) {
+            forwardPacketToClient(pair.second, data, length);
         }
     }
 }

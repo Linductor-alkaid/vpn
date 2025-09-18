@@ -3,6 +3,7 @@
 #include "windows_tap_interface.h"
 #include "crypto/crypto.h"
 #include "crypto/key_exchange.h"
+#include "common/secure_protocol.h"
 #include <string>
 #include <memory>
 #include <atomic>
@@ -30,6 +31,7 @@ public:
     enum class ConnectionState {
         DISCONNECTED,
         CONNECTING,
+        HANDSHAKING,
         AUTHENTICATING,
         CONNECTED,
         DISCONNECTING,
@@ -154,6 +156,11 @@ private:
     bool sendToServer(const uint8_t* data, size_t length);
     bool receiveFromServer(uint8_t* buffer, size_t buffer_size, size_t* received_length);
     
+    // 安全通信
+    bool sendSecureMessage(std::unique_ptr<common::SecureMessage> message);
+    bool processSecureMessage(const uint8_t* buffer, size_t buffer_size, 
+                             std::unique_ptr<common::SecureMessage>& message);
+    
     // 保活机制
     void keepaliveThreadFunc();
     bool sendKeepalive();
@@ -186,9 +193,8 @@ private:
     SOCKET udp_socket_{INVALID_SOCKET};
     struct sockaddr_in server_addr_{};
     
-    // 加密上下文
-    std::unique_ptr<crypto::CryptoContext> crypto_context_;
-    std::unique_ptr<crypto::KeyExchangeProtocol> key_exchange_;
+    // 安全协议上下文
+    std::unique_ptr<common::SecureProtocolContext> secure_context_;
     
     // 工作线程
     std::thread connection_thread_;

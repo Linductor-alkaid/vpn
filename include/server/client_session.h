@@ -16,6 +16,7 @@
 #endif
 
 #include "crypto/crypto.h"
+#include "common/secure_protocol.h"
 
 namespace sduvpn {
 namespace server {
@@ -27,6 +28,7 @@ using ClientId = uint32_t;
  */
 enum class SessionState {
     CONNECTING,     // 正在连接
+    HANDSHAKING,    // 正在握手
     AUTHENTICATING, // 正在认证
     AUTHENTICATED,  // 已认证
     ACTIVE,        // 活跃状态
@@ -111,29 +113,62 @@ public:
     const AuthInfo& getAuthInfo() const { return auth_info_; }
 
     /**
-     * @brief 初始化加密上下文
-     * @param shared_key 共享密钥
+     * @brief 初始化安全协议上下文
      * @return 是否初始化成功
      */
-    bool initializeCrypto(const std::vector<uint8_t>& shared_key);
+    bool initializeSecureProtocol();
 
     /**
-     * @brief 加密数据
-     * @param plaintext 明文数据
-     * @param ciphertext 密文输出缓冲区
+     * @brief 处理握手初始化消息
+     * @param init_message 握手初始化消息
+     * @param response_message 握手响应消息输出
+     * @return 是否处理成功
+     */
+    bool handleHandshakeInit(const common::HandshakeInitMessage& init_message,
+                            common::HandshakeResponseMessage& response_message);
+
+    /**
+     * @brief 完成握手流程
+     * @param complete_message 握手完成消息
+     * @return 是否完成成功
+     */
+    bool completeHandshake(const common::HandshakeCompleteMessage& complete_message);
+
+    /**
+     * @brief 检查握手是否完成
+     */
+    bool isHandshakeComplete() const;
+
+    /**
+     * @brief 创建安全消息
+     * @param type 消息类型
+     * @return 安全消息智能指针
+     */
+    std::unique_ptr<common::SecureMessage> createSecureMessage(common::MessageType type);
+
+    /**
+     * @brief 加密消息
+     * @param message 待加密消息
      * @return 是否加密成功
      */
-    bool encryptData(const std::vector<uint8_t>& plaintext, 
-                    std::vector<uint8_t>& ciphertext);
+    bool encryptMessage(common::SecureMessage& message);
 
     /**
-     * @brief 解密数据
-     * @param ciphertext 密文数据
-     * @param plaintext 明文输出缓冲区
+     * @brief 解密消息
+     * @param message 待解密消息
      * @return 是否解密成功
      */
-    bool decryptData(const std::vector<uint8_t>& ciphertext, 
-                    std::vector<uint8_t>& plaintext);
+    bool decryptMessage(common::SecureMessage& message);
+
+    /**
+     * @brief 处理接收到的安全消息
+     * @param buffer 消息缓冲区
+     * @param buffer_size 缓冲区大小
+     * @param message 解析后的消息输出
+     * @return 是否处理成功
+     */
+    bool processSecureMessage(const uint8_t* buffer, size_t buffer_size,
+                             std::unique_ptr<common::SecureMessage>& message);
 
     /**
      * @brief 更新最后活跃时间
@@ -192,9 +227,8 @@ private:
     AuthInfo auth_info_;
     bool authenticated_{false};
     
-    // 加密上下文
-    std::unique_ptr<crypto::CryptoContext> crypto_context_;
-    bool crypto_initialized_{false};
+    // 安全协议上下文
+    std::unique_ptr<common::SecureProtocolContext> secure_context_;
     
     // 统计信息
     SessionStats stats_;

@@ -18,6 +18,8 @@
 #include <arpa/inet.h>
 #endif
 
+#include "common/secure_protocol.h"
+
 namespace sduvpn {
 namespace server {
 
@@ -87,6 +89,19 @@ private:
     void networkThreadFunc();
     void handleClientMessage(const struct sockaddr_in& client_addr, 
                            const uint8_t* data, size_t length);
+    
+    // 安全消息处理
+    void handleHandshakeInit(SessionPtr session, const common::SecureMessage* message);
+    void handleHandshakeComplete(SessionPtr session, const common::SecureMessage* message);
+    void handleAuthRequest(SessionPtr session, const common::SecureMessage* message);
+    void handleDataPacket(SessionPtr session, const common::SecureMessage* message);
+    void handleKeepAlive(SessionPtr session, const common::SecureMessage* message);
+    void handleDisconnect(SessionPtr session, const common::SecureMessage* message);
+    
+    // 消息发送
+    bool sendSecureMessage(SessionPtr session, std::unique_ptr<common::SecureMessage> message);
+    void forwardPacketToClient(SessionPtr target_session, const uint8_t* data, size_t length);
+    void broadcastEncryptedPacket(const uint8_t* data, size_t length, ClientId exclude_client = 0);
     
     // TUN接口处理
     void tunThreadFunc();

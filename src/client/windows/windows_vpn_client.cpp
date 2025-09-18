@@ -9,9 +9,7 @@ namespace sduvpn {
 namespace client {
 
 WindowsVPNClient::WindowsVPNClient() 
-    : tap_interface_(std::make_unique<WindowsTapInterface>()),
-      crypto_context_(std::make_unique<crypto::CryptoContext>()),
-      key_exchange_(std::make_unique<crypto::KeyExchangeProtocol>()) {
+    : tap_interface_(std::make_unique<WindowsTapInterface>()) {
     
     // 初始化Winsock
     WindowsVPNClientManager::getInstance().initializeWinsock();
@@ -255,60 +253,154 @@ void WindowsVPNClient::connectionThreadFunc() {
 }
 
 bool WindowsVPNClient::performHandshake() {
-    logMessage("Performing simplified handshake with server");
+    logMessage("Starting secure handshake with server");
     
-    // 简化握手：直接发送一个握手消息而不是复杂的密钥交换
-    // 这样可以与当前的服务器实现兼容
-    
-    // 创建握手消息
-    std::string handshake_msg = "SDUVPN_HANDSHAKE_V1";
-    
-    if (!sendToServer(reinterpret_cast<const uint8_t*>(handshake_msg.c_str()), handshake_msg.length())) {
-        setLastError("Failed to send handshake message");
+    // 初始化安全协议上下文
+    secure_context_ = std::make_unique<common::SecureProtocolContext>();
+    if (!secure_context_->initializeAsClient()) {
+        setLastError("Failed to initialize secure protocol context");
         return false;
     }
     
-    logMessage("Handshake message sent to server");
+    setState(ConnectionState::HANDSHAKING);
     
-    // 使用简单的固定密钥进行加密（在生产环境中应该使用真正的密钥交换）
-    // 这里暂时跳过复杂的密钥交换，直接初始化加密上下文
-    uint8_t simple_key[32];
-    memset(simple_key, 0x42, sizeof(simple_key)); // 简单的固定密钥
-    
-    if (!crypto_context_->initialize(simple_key, sizeof(simple_key))) {
-        setLastError("Failed to initialize crypto context");
+    // 1. 发送握手初始化消息
+    common::HandshakeInitMessage init_message;
+    if (!secure_context_->startHandshake(init_message)) {
+        setLastError("Failed to start handshake");
         return false;
     }
     
-    logMessage("Simplified handshake completed successfully");
+    auto init_msg = secure_context_->createMessage(common::MessageType::HANDSHAKE_INIT);
+    if (!init_msg) {
+        setLastError("Failed to create handshake init message");
+        return false;
+    }
+    
+    init_msg->setPayload(reinterpret_cast<const uint8_t*>(&init_message), sizeof(init_message));
+    
+    if (!sendSecureMessage(std::move(init_msg))) {
+        setLastError("Failed to send handshake init message");
+        return false;
+    }
+    
+    // 2. 接收握手响应
+    uint8_t buffer[common::MAX_PACKET_SIZE];
+    size_t received_length;
+    if (!receiveFromServer(buffer, sizeof(buffer), &received_length)) {
+        setLastError("Failed to receive handshake response");
+        return false;
+    }
+    
+    auto response_msg = std::make_unique<common::SecureMessage>();
+    if (!response_msg->deserialize(buffer, received_length)) {
+        setLastError("Failed to deserialize handshake response");
+        return false;
+    }
+    
+    if (response_msg->getType() != common::MessageType::HANDSHAKE_RESPONSE) {
+        setLastError("Invalid handshake response message type");
+        return false;
+    }
+    
+    // 3. 处理握手响应
+    auto payload = response_msg->getPayload();
+    if (payload.second < sizeof(common::HandshakeResponseMessage)) {
+        setLastError("Invalid handshake response message size");
+        return false;
+    }
+    
+    const common::HandshakeResponseMessage* response_data = 
+        reinterpret_cast<const common::HandshakeResponseMessage*>(payload.first);
+    
+    common::HandshakeCompleteMessage complete_message;
+    if (!secure_context_->handleHandshakeResponse(*response_data, complete_message)) {
+        setLastError("Failed to handle handshake response");
+        return false;
+    }
+    
+    // 4. 发送握手完成消息
+    auto complete_msg = secure_context_->createMessage(common::MessageType::HANDSHAKE_COMPLETE);
+    if (!complete_msg) {
+        setLastError("Failed to create handshake complete message");
+        return false;
+    }
+    
+    complete_msg->setPayload(reinterpret_cast<const uint8_t*>(&complete_message), 
+                           sizeof(complete_message));
+    
+    if (!sendSecureMessage(std::move(complete_msg))) {
+        setLastError("Failed to send handshake complete message");
+        return false;
+    }
+    
+    // 验证握手是否完成
+    if (!secure_context_->isHandshakeComplete()) {
+        setLastError("Handshake not completed properly");
+        return false;
+    }
+    
+    logMessage("Secure handshake completed successfully");
     return true;
 }
 
 bool WindowsVPNClient::authenticateWithServer() {
-    logMessage("Performing simplified authentication with server");
+    logMessage("Starting secure authentication with server");
     
-    // 简化认证：发送明文认证消息（与当前服务器实现兼容）
-    // 在生产环境中应该加密
-    
-    // 构建简单的认证消息
-    std::string auth_message = "AUTH:" + config_.username + ":" + config_.password;
-    
-    // 直接发送认证消息（不加密，因为服务器端还没有完整的解密实现）
-    if (!sendToServer(reinterpret_cast<const uint8_t*>(auth_message.c_str()), auth_message.length())) {
-        setLastError("Failed to send authentication message");
+    if (!secure_context_ || !secure_context_->isHandshakeComplete()) {
+        setLastError("Handshake not completed, cannot authenticate");
         return false;
     }
     
-    logMessage("Authentication message sent to server");
+    setState(ConnectionState::AUTHENTICATING);
     
-    // 暂时跳过等待服务器响应，因为当前服务器实现可能不发送认证响应
-    // 直接分配一个虚拟IP（在生产环境中应该由服务器分配）
-    if (config_.virtual_ip.empty()) {
-        config_.virtual_ip = "10.8.0.2"; // 默认客户端IP
+    // 构建认证消息（JSON格式）
+    std::string auth_data = "{\"username\":\"" + config_.username + 
+                           "\",\"password\":\"" + config_.password + 
+                           "\",\"client_version\":\"SDUVPN Client v1.0\"}";
+    
+    // 创建认证请求消息
+    auto auth_message = secure_context_->createMessage(common::MessageType::AUTH_REQUEST);
+    if (!auth_message) {
+        setLastError("Failed to create auth request message");
+        return false;
     }
     
-    logMessage("Simplified authentication completed, using IP: " + config_.virtual_ip);
-    return true;
+    auth_message->setPayload(reinterpret_cast<const uint8_t*>(auth_data.c_str()), 
+                           auth_data.length());
+    
+    // 发送认证请求
+    if (!sendSecureMessage(std::move(auth_message))) {
+        setLastError("Failed to send authentication request");
+        return false;
+    }
+    
+    logMessage("Secure authentication request sent to server");
+    
+    // 等待认证响应（在processNetworkPacket中处理）
+    // 这里可以设置一个超时机制
+    auto start_time = std::chrono::steady_clock::now();
+    const auto timeout = std::chrono::seconds(10);
+    
+    while (connection_state_.load() == ConnectionState::AUTHENTICATING && 
+           !should_stop_.load()) {
+        
+        if (std::chrono::steady_clock::now() - start_time > timeout) {
+            setLastError("Authentication timeout");
+            setState(ConnectionState::ERROR_STATE);
+            return false;
+        }
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    
+    if (connection_state_.load() == ConnectionState::CONNECTED) {
+        logMessage("Secure authentication completed successfully");
+        return true;
+    } else {
+        setLastError("Authentication failed");
+        return false;
+    }
 }
 
 bool WindowsVPNClient::setupTunnel() {
@@ -397,17 +489,33 @@ void WindowsVPNClient::networkWriterThreadFunc() {
 }
 
 bool WindowsVPNClient::processTapPacket(const uint8_t* data, size_t length) {
-    // 加密数据包
-    std::vector<uint8_t> encrypted_packet(length + 64); // 留出加密开销空间
-    size_t encrypted_length;
+    if (!secure_context_ || !secure_context_->isHandshakeComplete()) {
+        // 握手未完成，丢弃数据包
+        return false;
+    }
     
-    if (!crypto_context_->encrypt(data, length, encrypted_packet.data(), 
-                                 encrypted_packet.size(), &encrypted_length)) {
+    // 创建数据包消息
+    auto message = secure_context_->createMessage(common::MessageType::DATA_PACKET);
+    if (!message) {
+        return false;
+    }
+    
+    message->setPayload(data, length);
+    
+    // 序列化并加密消息
+    uint8_t buffer[common::MAX_PACKET_SIZE];
+    size_t actual_size;
+    
+    if (!secure_context_->encryptMessage(*message)) {
+        return false;
+    }
+    
+    if (!message->serialize(buffer, sizeof(buffer), &actual_size)) {
         return false;
     }
     
     // 添加到发送队列
-    encrypted_packet.resize(encrypted_length);
+    std::vector<uint8_t> encrypted_packet(buffer, buffer + actual_size);
     {
         std::lock_guard<std::mutex> lock(outbound_queue_mutex_);
         outbound_queue_.push(std::move(encrypted_packet));
@@ -419,22 +527,73 @@ bool WindowsVPNClient::processTapPacket(const uint8_t* data, size_t length) {
 }
 
 bool WindowsVPNClient::processNetworkPacket(const uint8_t* data, size_t length) {
-    // 解密数据包
-    std::vector<uint8_t> decrypted_packet(length);
-    size_t decrypted_length;
-    
-    if (!crypto_context_->decrypt(data, length, decrypted_packet.data(), 
-                                 decrypted_packet.size(), &decrypted_length)) {
+    // 处理接收到的安全消息
+    std::unique_ptr<common::SecureMessage> message;
+    if (!processSecureMessage(data, length, message)) {
         return false;
     }
     
-    // 写入TAP适配器
-    DWORD bytes_written;
-    if (!tap_interface_->writePacket(decrypted_packet.data(), decrypted_length, &bytes_written)) {
+    if (!message) {
         return false;
     }
     
-    updateStats(0, 0, 0, 1);
+    // 根据消息类型处理
+    switch (message->getType()) {
+        case common::MessageType::AUTH_RESPONSE:
+            {
+                auto payload = message->getPayload();
+                std::string response(reinterpret_cast<const char*>(payload.first), payload.second);
+                logMessage("Received auth response: " + response);
+                
+                // 解析认证响应
+                if (response.find("\"status\":\"success\"") != std::string::npos) {
+                    setState(ConnectionState::CONNECTED);
+                    logMessage("Authentication successful");
+                } else {
+                    setState(ConnectionState::ERROR_STATE);
+                    setLastError("Authentication failed");
+                }
+            }
+            break;
+            
+        case common::MessageType::DATA_PACKET:
+            {
+                // 处理数据包
+                auto payload = message->getPayload();
+                if (payload.first && payload.second > 0) {
+                    // 写入TAP适配器
+                    DWORD bytes_written;
+                    if (tap_interface_->writePacket(payload.first, payload.second, &bytes_written)) {
+                        updateStats(0, 0, 0, 1);
+                    }
+                }
+            }
+            break;
+            
+        case common::MessageType::KEEPALIVE:
+            // 保活响应，无需特殊处理
+            break;
+            
+        case common::MessageType::DISCONNECT:
+            logMessage("Server requested disconnect");
+            setState(ConnectionState::DISCONNECTING);
+            break;
+            
+        case common::MessageType::ERROR_RESPONSE:
+            {
+                auto payload = message->getPayload();
+                std::string error(reinterpret_cast<const char*>(payload.first), payload.second);
+                setLastError("Server error: " + error);
+                setState(ConnectionState::ERROR_STATE);
+            }
+            break;
+            
+        default:
+            logMessage("Received unknown message type: " + 
+                      std::to_string(static_cast<int>(message->getType())));
+            break;
+    }
+    
     return true;
 }
 
@@ -524,6 +683,67 @@ bool WindowsVPNClient::receiveFromServer(uint8_t* buffer, size_t buffer_size, si
     *received_length = received;
     updateStats(0, received, 0, 0);
     return true;
+}
+
+bool WindowsVPNClient::sendSecureMessage(std::unique_ptr<common::SecureMessage> message) {
+    if (!message) {
+        return false;
+    }
+    
+    // 如果握手已完成且消息需要加密
+    if (secure_context_ && secure_context_->isHandshakeComplete() &&
+        message->getType() != common::MessageType::HANDSHAKE_INIT &&
+        message->getType() != common::MessageType::HANDSHAKE_RESPONSE &&
+        message->getType() != common::MessageType::HANDSHAKE_COMPLETE) {
+        
+        if (!secure_context_->encryptMessage(*message)) {
+            setLastError("Failed to encrypt message");
+            return false;
+        }
+    }
+    
+    // 序列化消息
+    uint8_t buffer[common::MAX_PACKET_SIZE];
+    size_t actual_size;
+    
+    if (!message->serialize(buffer, sizeof(buffer), &actual_size)) {
+        setLastError("Failed to serialize message");
+        return false;
+    }
+    
+    // 发送到服务器
+    return sendToServer(buffer, actual_size);
+}
+
+bool WindowsVPNClient::processSecureMessage(const uint8_t* buffer, size_t buffer_size,
+                                           std::unique_ptr<common::SecureMessage>& message) {
+    if (!buffer || buffer_size == 0) {
+        return false;
+    }
+    
+    try {
+        message = std::make_unique<common::SecureMessage>();
+        if (!message->deserialize(buffer, buffer_size)) {
+            message.reset();
+            return false;
+        }
+        
+        // 如果消息是加密的且握手已完成，尝试解密
+        if (message->isEncrypted() && secure_context_ && secure_context_->isHandshakeComplete()) {
+            if (!secure_context_->decryptMessage(*message)) {
+                setLastError("Failed to decrypt message");
+                message.reset();
+                return false;
+            }
+        }
+        
+        return true;
+        
+    } catch (const std::exception& e) {
+        setLastError("Message processing failed: " + std::string(e.what()));
+        message.reset();
+        return false;
+    }
 }
 
 void WindowsVPNClient::keepaliveThreadFunc() {
