@@ -510,21 +510,27 @@ void VPNServer::handleAuthRequest(SessionPtr session, const common::SecureMessag
     
     // 进行认证
     if (session->authenticate(username, password, client_version, config_.get())) {
-        // 分配虚拟IP
-        std::string virtual_ip = allocateVirtualIP();
+        // 检查会话是否已经有分配的IP
+        std::string virtual_ip = session->getVirtualIP();
         if (virtual_ip.empty()) {
-            std::cerr << "Failed to allocate virtual IP for client " << session->getClientId() << std::endl;
-            auto error_response = session->createSecureMessage(common::MessageType::ERROR_RESPONSE);
-            if (error_response) {
-                std::string error_msg = "{\"error\":\"no_available_ip\"}";
-                error_response->setPayload(reinterpret_cast<const uint8_t*>(error_msg.c_str()), 
-                                         error_msg.length());
-                sendSecureMessage(session, std::move(error_response));
+            // 分配新的虚拟IP
+            virtual_ip = allocateVirtualIP();
+            if (virtual_ip.empty()) {
+                std::cerr << "Failed to allocate virtual IP for client " << session->getClientId() << std::endl;
+                auto error_response = session->createSecureMessage(common::MessageType::ERROR_RESPONSE);
+                if (error_response) {
+                    std::string error_msg = "{\"error\":\"no_available_ip\"}";
+                    error_response->setPayload(reinterpret_cast<const uint8_t*>(error_msg.c_str()), 
+                                             error_msg.length());
+                    sendSecureMessage(session, std::move(error_response));
+                }
+                return;
             }
-            return;
+            session->assignVirtualIP(virtual_ip);
+        } else {
+            // 重用现有IP，需要确保IP仍然被分配给该客户端
+            std::cout << "Reusing existing virtual IP: " << virtual_ip << " for client " << session->getClientId() << std::endl;
         }
-        
-        session->assignVirtualIP(virtual_ip);
         
         // 创建认证响应
         auto response = session->createSecureMessage(common::MessageType::AUTH_RESPONSE);
@@ -536,6 +542,10 @@ void VPNServer::handleAuthRequest(SessionPtr session, const common::SecureMessag
             std::cout << "Sending auth response: " << auth_response << std::endl;
             if (sendSecureMessage(session, std::move(response))) {
                 std::cout << "Auth response sent successfully" << std::endl;
+                
+                // 认证响应发送成功后，将状态设置为ACTIVE
+                session->setState(SessionState::ACTIVE);
+                std::cout << "Client " << session->getClientId() << " state set to ACTIVE" << std::endl;
             } else {
                 std::cout << "Failed to send auth response" << std::endl;
             }
@@ -609,14 +619,21 @@ void VPNServer::handleKeepAlive(SessionPtr session, const common::SecureMessage*
     // 显式更新活跃时间（确保心跳包能重置超时计时器）
     session->updateLastActivity();
     
-    // 由于心跳包很频繁（1秒一次），只在调试模式下输出日志
-    // std::cout << "Received keepalive from client " << session->getClientId() 
-    //           << ", IP: " << session->getVirtualIP() << std::endl;
+    // 启用心跳包日志以便调试
+    std::cout << "Received keepalive from client " << session->getClientId() 
+              << ", IP: " << session->getVirtualIP() 
+              << ", State: " << static_cast<int>(session->getState()) << std::endl;
     
     // 发送keepalive响应
     auto response = session->createSecureMessage(common::MessageType::KEEPALIVE);
     if (response) {
-        sendSecureMessage(session, std::move(response));
+        if (sendSecureMessage(session, std::move(response))) {
+            std::cout << "Keepalive response sent successfully to client " << session->getClientId() << std::endl;
+        } else {
+            std::cout << "Failed to send keepalive response to client " << session->getClientId() << std::endl;
+        }
+    } else {
+        std::cout << "Failed to create keepalive response for client " << session->getClientId() << std::endl;
     }
 }
 
@@ -645,16 +662,24 @@ void VPNServer::handleDisconnect(SessionPtr session, const common::SecureMessage
 
 bool VPNServer::sendSecureMessage(SessionPtr session, std::unique_ptr<common::SecureMessage> message) {
     if (!session || !message) {
+        std::cerr << "sendSecureMessage: Invalid session or message" << std::endl;
         return false;
     }
     
     // 如果需要加密且握手已完成
-    if (message->getType() != common::MessageType::HANDSHAKE_INIT &&
-        message->getType() != common::MessageType::HANDSHAKE_RESPONSE &&
-        session->isHandshakeComplete()) {
-        
+    bool should_encrypt = (message->getType() != common::MessageType::HANDSHAKE_INIT &&
+                          message->getType() != common::MessageType::HANDSHAKE_RESPONSE &&
+                          session->isHandshakeComplete());
+    
+    std::cout << "sendSecureMessage: Type=" << static_cast<int>(message->getType()) 
+              << ", HandshakeComplete=" << (session->isHandshakeComplete() ? "yes" : "no")
+              << ", ShouldEncrypt=" << (should_encrypt ? "yes" : "no")
+              << ", ClientState=" << static_cast<int>(session->getState()) << std::endl;
+    
+    if (should_encrypt) {
         if (!session->encryptMessage(*message)) {
-            std::cerr << "Failed to encrypt message" << std::endl;
+            std::cerr << "Failed to encrypt message for client " << session->getClientId() 
+                      << ", message type: " << static_cast<int>(message->getType()) << std::endl;
             return false;
         }
     }
@@ -751,14 +776,21 @@ SessionPtr VPNServer::findOrCreateSession(const struct sockaddr_in& client_addr)
     std::string client_key = std::string(inet_ntoa(client_addr.sin_addr)) + ":" + 
                             std::to_string(ntohs(client_addr.sin_port));
     
-    // Simplified implementation: use address as client ID hash
-    ClientId client_id = std::hash<std::string>{}(client_key) % 1000000 + 1;
-    
-    auto it = sessions_.find(client_id);
-    if (it != sessions_.end()) {
-        // Update endpoint information
-        it->second->setEndpoint(client_addr);
-        return it->second;
+    // 首先检查是否有相同IP地址的现有会话（忽略端口，因为客户端重连时端口可能变化）
+    for (auto& pair : sessions_) {
+        const struct sockaddr_in& existing_addr = pair.second->getEndpoint();
+        if (existing_addr.sin_addr.s_addr == client_addr.sin_addr.s_addr) {
+            // 找到相同IP的会话，更新端点信息并返回
+            pair.second->setEndpoint(client_addr);
+            
+            // 重置会话状态，允许重新握手
+            pair.second->setState(SessionState::CONNECTING);
+            pair.second->updateLastActivity();
+            
+            std::cout << "Reusing existing session for client IP: " << inet_ntoa(client_addr.sin_addr) 
+                      << " (ID: " << pair.first << ", new port: " << ntohs(client_addr.sin_port) << ")" << std::endl;
+            return pair.second;
+        }
     }
     
     // Check if maximum client limit is reached
@@ -766,6 +798,15 @@ SessionPtr VPNServer::findOrCreateSession(const struct sockaddr_in& client_addr)
         std::cerr << "Maximum client limit reached: " << config_->getMaxClients() << std::endl;
         return nullptr;
     }
+    
+    // 生成新的唯一客户端ID（避免重复）
+    ClientId client_id;
+    do {
+        client_id = next_client_id_++;
+        if (next_client_id_ > 999999) {
+            next_client_id_ = 1; // 循环使用ID
+        }
+    } while (sessions_.find(client_id) != sessions_.end());
     
     // Create new session
     SessionPtr session = std::make_shared<ClientSession>(client_id);
@@ -805,10 +846,23 @@ void VPNServer::removeSession(ClientId client_id) {
         // Remove from IP mapping and release IP
         if (!virtual_ip.empty()) {
             ip_to_client_.erase(virtual_ip);
-            try {
-                releaseVirtualIP(virtual_ip);
-            } catch (const std::exception& e) {
-                std::cerr << "Error releasing IP " << virtual_ip << ": " << e.what() << std::endl;
+            
+            // 检查是否有其他会话正在使用相同的IP（重用会话的情况）
+            bool ip_still_in_use = false;
+            for (const auto& other_pair : sessions_) {
+                if (other_pair.first != client_id && other_pair.second->getVirtualIP() == virtual_ip) {
+                    ip_still_in_use = true;
+                    std::cout << "IP " << virtual_ip << " is still in use by session " << other_pair.first << std::endl;
+                    break;
+                }
+            }
+            
+            if (!ip_still_in_use) {
+                try {
+                    releaseVirtualIP(virtual_ip);
+                } catch (const std::exception& e) {
+                    std::cerr << "Error releasing IP " << virtual_ip << ": " << e.what() << std::endl;
+                }
             }
         }
         
@@ -1087,6 +1141,9 @@ std::string VPNServer::allocateVirtualIP() {
             struct in_addr addr;
             addr.s_addr = htonl(ip_uint);
             std::string ip_str = inet_ntoa(addr);
+            
+            // 更新IP到客户端的映射（这里需要客户端ID，但当前函数没有这个参数）
+            // 这个映射会在assignVirtualIP中更新
             
             std::cout << "Allocated virtual IP: " << ip_str << " (offset: " << offset 
                       << ", next_offset: " << next_ip_offset_ << ")" << std::endl;
