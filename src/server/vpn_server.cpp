@@ -841,14 +841,14 @@ void VPNServer::cleanupInactiveSessions() {
                 SessionState state = pair.second->getState();
                 
                 // 清理超时的会话（基于心跳包检测）
-                // 对于已连接的客户端，使用更短的超时时间（心跳包间隔的5倍）
+                // 对于已连接的客户端，使用合理的超时时间（心跳包间隔的10倍）
                 int timeout_seconds = config_->getClientTimeoutSeconds();
                 if (state == SessionState::ACTIVE) {
-                    // 活跃客户端的心跳包间隔是1秒，使用5秒超时
-                    timeout_seconds = 5;
+                    // 活跃客户端的心跳包间隔是1秒，使用10秒超时（允许网络波动）
+                    timeout_seconds = 10;
                 } else if (state == SessionState::AUTHENTICATED) {
                     // 已认证但未完全激活的客户端，使用较短超时
-                    timeout_seconds = 10;
+                    timeout_seconds = 15;
                 }
                 
                 if (pair.second->isExpired(timeout_seconds)) {
@@ -917,6 +917,9 @@ void VPNServer::cleanupInactiveSessions() {
                   << disconnected_clients.size() << " disconnected, "
                   << connecting_timeout_clients.size() << " timeout sessions" << std::endl;
     }
+    
+    // 清理过期的延迟释放IP
+    cleanupDelayedReleaseIPs();
     
     // 定期输出会话状态统计（每10次清理输出一次）
     static int cleanup_count = 0;
@@ -1057,6 +1060,20 @@ std::string VPNServer::allocateVirtualIP() {
         
         // 检查这个IP是否已被分配
         if (allocated_ips_.find(ip_uint) == allocated_ips_.end()) {
+            // 检查是否在延迟释放列表中
+            auto delayed_it = delayed_release_ips_.find(ip_uint);
+            if (delayed_it != delayed_release_ips_.end()) {
+                // 检查延迟时间是否已过
+                auto now = std::chrono::steady_clock::now();
+                if (now - delayed_it->second < std::chrono::seconds(30)) {
+                    // 还在延迟期内，跳过这个IP
+                    continue;
+                } else {
+                    // 延迟期已过，可以重新分配
+                    delayed_release_ips_.erase(delayed_it);
+                }
+            }
+            
             // 分配这个IP
             allocated_ips_.insert(ip_uint);
             
@@ -1097,13 +1114,33 @@ void VPNServer::releaseVirtualIP(const std::string& ip) {
     if (it != allocated_ips_.end()) {
         allocated_ips_.erase(it);
         
-        // 如果释放的IP比当前next_ip_offset_小，可以考虑调整next_ip_offset_
-        // 但这可能会影响分配顺序，所以暂时保持简单
+        // 添加到延迟释放列表，30秒后才能重新分配
+        delayed_release_ips_[ip_uint] = std::chrono::steady_clock::now();
+        
         std::cout << "Released virtual IP: " << ip << " (offset: " << offset 
                   << ", pool size: " << allocated_ips_.size() 
-                  << ", next_offset: " << next_ip_offset_ << ")" << std::endl;
+                  << ", delayed for 30s)" << std::endl;
     } else {
         std::cout << "Warning: Attempted to release unallocated IP: " << ip << std::endl;
+    }
+}
+
+void VPNServer::cleanupDelayedReleaseIPs() {
+    std::lock_guard<std::mutex> lock(ip_pool_mutex_);
+    
+    auto now = std::chrono::steady_clock::now();
+    auto it = delayed_release_ips_.begin();
+    
+    while (it != delayed_release_ips_.end()) {
+        if (now - it->second >= std::chrono::seconds(30)) {
+            // 延迟期已过，可以从延迟列表中移除
+            struct in_addr addr;
+            addr.s_addr = htonl(it->first);
+            std::cout << "IP " << inet_ntoa(addr) << " delay period expired, available for reallocation" << std::endl;
+            it = delayed_release_ips_.erase(it);
+        } else {
+            ++it;
+        }
     }
 }
 
@@ -1113,12 +1150,23 @@ void VPNServer::printIPPoolStatus() {
     std::cout << "IP Pool Status:" << std::endl;
     std::cout << "  Next offset: " << next_ip_offset_ << std::endl;
     std::cout << "  Allocated IPs: " << allocated_ips_.size() << std::endl;
+    std::cout << "  Delayed release IPs: " << delayed_release_ips_.size() << std::endl;
     
     if (!allocated_ips_.empty()) {
         std::cout << "  Allocated IP list: ";
         for (uint32_t ip_uint : allocated_ips_) {
             struct in_addr addr;
             addr.s_addr = htonl(ip_uint);
+            std::cout << inet_ntoa(addr) << " ";
+        }
+        std::cout << std::endl;
+    }
+    
+    if (!delayed_release_ips_.empty()) {
+        std::cout << "  Delayed release IP list: ";
+        for (const auto& pair : delayed_release_ips_) {
+            struct in_addr addr;
+            addr.s_addr = htonl(pair.first);
             std::cout << inet_ntoa(addr) << " ";
         }
         std::cout << std::endl;

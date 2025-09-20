@@ -26,6 +26,7 @@ set(WINDOWS_CLIENT_SOURCES
     windows_tap_interface.cpp
     windows_vpn_client.cpp
     windows_service.cpp
+    resource.rc
 )
 
 # 头文件

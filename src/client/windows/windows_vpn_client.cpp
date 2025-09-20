@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <chrono>
 #include <algorithm>
+#include <future>
 
 namespace sduvpn {
 namespace client {
@@ -295,59 +296,26 @@ bool WindowsVPNClient::performHandshake() {
         return false;
     }
     
-    // 2. 接收握手响应
-    uint8_t buffer[common::MAX_PACKET_SIZE];
-    size_t received_length;
-    if (!receiveFromServer(buffer, sizeof(buffer), &received_length)) {
-        setLastError("Failed to receive handshake response");
+    logMessage("Handshake init message sent, waiting for response...");
+    
+    // 握手响应将通过异步消息处理来处理
+    // 等待握手完成（由网络读取线程处理握手响应）
+    auto start_time = std::chrono::steady_clock::now();
+    const auto timeout = std::chrono::seconds(30);
+    
+    while (connection_state_.load() == ConnectionState::HANDSHAKING && 
+           !should_stop_.load() &&
+           std::chrono::steady_clock::now() - start_time < timeout) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    
+    if (connection_state_.load() == ConnectionState::HANDSHAKING) {
+        setLastError("Handshake timeout");
         return false;
     }
     
-    auto response_msg = std::make_unique<common::SecureMessage>();
-    if (!response_msg->deserialize(buffer, received_length)) {
-        setLastError("Failed to deserialize handshake response");
-        return false;
-    }
-    
-    if (response_msg->getType() != common::MessageType::HANDSHAKE_RESPONSE) {
-        setLastError("Invalid handshake response message type");
-        return false;
-    }
-    
-    // 3. 处理握手响应
-    auto payload = response_msg->getPayload();
-    if (payload.second < sizeof(common::HandshakeResponseMessage)) {
-        setLastError("Invalid handshake response message size");
-        return false;
-    }
-    
-    const common::HandshakeResponseMessage* response_data = 
-        reinterpret_cast<const common::HandshakeResponseMessage*>(payload.first);
-    
-    common::HandshakeCompleteMessage complete_message;
-    if (!secure_context_->handleHandshakeResponse(*response_data, complete_message)) {
-        setLastError("Failed to handle handshake response");
-        return false;
-    }
-    
-    // 4. 发送握手完成消息
-    auto complete_msg = secure_context_->createMessage(common::MessageType::HANDSHAKE_COMPLETE);
-    if (!complete_msg) {
-        setLastError("Failed to create handshake complete message");
-        return false;
-    }
-    
-    complete_msg->setPayload(reinterpret_cast<const uint8_t*>(&complete_message), 
-                           sizeof(complete_message));
-    
-    if (!sendSecureMessage(std::move(complete_msg))) {
-        setLastError("Failed to send handshake complete message");
-        return false;
-    }
-    
-    // 验证握手是否完成
     if (!secure_context_->isHandshakeComplete()) {
-        setLastError("Handshake not completed properly");
+        setLastError("Handshake failed to complete");
         return false;
     }
     
@@ -562,6 +530,52 @@ bool WindowsVPNClient::processNetworkPacket(const uint8_t* data, size_t length) 
     
     // 根据消息类型处理
     switch (message->getType()) {
+        case common::MessageType::HANDSHAKE_RESPONSE:
+            {
+                logMessage("Received handshake response from server");
+                
+                // 只有在握手状态下才处理握手响应
+                if (connection_state_.load() != ConnectionState::HANDSHAKING) {
+                    logMessage("Received handshake response but not in handshaking state");
+                    break;
+                }
+                
+                // 处理握手响应
+                auto payload = message->getPayload();
+                if (payload.second >= sizeof(common::HandshakeResponseMessage)) {
+                    const common::HandshakeResponseMessage* response_data = 
+                        reinterpret_cast<const common::HandshakeResponseMessage*>(payload.first);
+                    
+                    common::HandshakeCompleteMessage complete_message;
+                    if (secure_context_->handleHandshakeResponse(*response_data, complete_message)) {
+                        // 发送握手完成消息
+                        auto complete_msg = secure_context_->createMessage(common::MessageType::HANDSHAKE_COMPLETE);
+                        if (complete_msg) {
+                            complete_msg->setPayload(reinterpret_cast<const uint8_t*>(&complete_message), 
+                                                   sizeof(complete_message));
+                            if (sendSecureMessage(std::move(complete_msg))) {
+                                logMessage("Handshake complete message sent");
+                                // 握手完成，更新状态为准备认证
+                                setState(ConnectionState::AUTHENTICATING);
+                            } else {
+                                logMessage("Failed to send handshake complete message");
+                                setState(ConnectionState::ERROR_STATE);
+                            }
+                        } else {
+                            logMessage("Failed to create handshake complete message");
+                            setState(ConnectionState::ERROR_STATE);
+                        }
+                    } else {
+                        logMessage("Failed to handle handshake response");
+                        setState(ConnectionState::ERROR_STATE);
+                    }
+                } else {
+                    logMessage("Invalid handshake response size");
+                    setState(ConnectionState::ERROR_STATE);
+                }
+            }
+            break;
+            
         case common::MessageType::AUTH_RESPONSE:
             {
                 auto payload = message->getPayload();
@@ -1060,31 +1074,50 @@ std::string WindowsVPNClient::getServerIP() const {
 
 void WindowsVPNClient::waitForThreadsToFinish() {
     // 安全地等待所有线程结束
-    auto wait_for_thread = [](std::thread& t, const std::string& name) {
+    auto wait_for_thread = [this](std::thread& t, const std::string& name, int timeout_ms = 2000) {
         if (t.joinable()) {
             try {
-                // 给线程一些时间自然结束
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                logMessage("Waiting for " + name + " thread to finish...");
                 
-                // 如果线程还在运行，强制分离
+                // 使用future来实现带超时的join
+                auto future = std::async(std::launch::async, [&t]() {
+                    if (t.joinable()) {
+                        t.join();
+                    }
+                });
+                
+                // 等待线程结束，最多等待timeout_ms毫秒
+                if (future.wait_for(std::chrono::milliseconds(timeout_ms)) == std::future_status::timeout) {
+                    logMessage("Warning: " + name + " thread did not finish in time, detaching...");
+                    if (t.joinable()) {
+                        t.detach();
+                    }
+                } else {
+                    logMessage(name + " thread finished successfully");
+                }
+            } catch (const std::exception& e) {
+                logMessage("Exception waiting for " + name + " thread: " + e.what());
                 if (t.joinable()) {
                     t.detach();
                 }
             } catch (...) {
-                // 忽略线程操作异常
+                logMessage("Unknown exception waiting for " + name + " thread");
+                if (t.joinable()) {
+                    t.detach();
+                }
             }
         }
     };
     
-    wait_for_thread(connection_thread_, "connection");
-    wait_for_thread(tap_reader_thread_, "tap_reader");
-    wait_for_thread(network_reader_thread_, "network_reader");
-    wait_for_thread(network_writer_thread_, "network_writer");
-    wait_for_thread(keepalive_thread_, "keepalive");
-    wait_for_thread(reconnect_thread_, "reconnect");
+    // 等待各个线程结束，给每个线程足够的时间
+    wait_for_thread(tap_reader_thread_, "tap_reader", 1000);
+    wait_for_thread(network_reader_thread_, "network_reader", 1000);
+    wait_for_thread(network_writer_thread_, "network_writer", 1000);
+    wait_for_thread(keepalive_thread_, "keepalive", 1000);
+    wait_for_thread(reconnect_thread_, "reconnect", 1000);
+    wait_for_thread(connection_thread_, "connection", 2000); // 连接线程可能需要更多时间
     
-    // 额外等待确保资源清理完成
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    logMessage("All threads cleanup completed");
 }
 
 } // namespace client

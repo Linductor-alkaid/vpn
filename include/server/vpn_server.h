@@ -9,6 +9,7 @@
 #include <mutex>
 #include <thread>
 #include <set>
+#include <chrono>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -123,6 +124,7 @@ private:
     std::string allocateVirtualIP();
     void releaseVirtualIP(const std::string& ip);
     bool initializeIPPool();
+    void cleanupDelayedReleaseIPs();
     void printIPPoolStatus();
     
     // 数据包路由
@@ -154,6 +156,7 @@ private:
     // IP地址池管理
     mutable std::mutex ip_pool_mutex_;
     std::set<uint32_t> allocated_ips_;     // 已分配的IP地址（主机字节序）
+    std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> delayed_release_ips_; // 延迟释放的IP
     uint32_t base_ip_{0};                  // 基础IP地址（如10.8.0.0）
     uint32_t netmask_{0};                  // 网络掩码
     uint32_t next_ip_offset_{2};           // 下一个可分配的IP偏移（从.2开始）
