@@ -187,6 +187,8 @@ bool ClientSession::processSecureMessage(const uint8_t* buffer, size_t buffer_si
         // 如果消息是加密的，尝试解密
         if (message->isEncrypted() && secure_context_) {
             if (!secure_context_->decryptMessage(*message)) {
+                std::cerr << "Failed to decrypt message for client " << client_id_ 
+                          << ", message type: " << static_cast<int>(message->getType()) << std::endl;
                 message.reset();
                 return false;
             }

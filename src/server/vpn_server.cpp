@@ -342,9 +342,14 @@ void VPNServer::handleClientMessage(const struct sockaddr_in& client_addr,
     std::unique_ptr<common::SecureMessage> message;
     if (!session->processSecureMessage(data, length, message)) {
         std::cerr << "Failed to process secure message from client " 
-                  << session->getClientId() << std::endl;
+                  << session->getClientId() << " (data length: " << length << ")" << std::endl;
         return;
     }
+    
+    // 调试：记录所有接收到的消息
+    std::cout << "Received message from client " << session->getClientId() 
+              << ", type: " << static_cast<int>(message->getType())
+              << ", length: " << length << " bytes" << std::endl;
     
     // 根据消息类型处理（只记录非数据包消息）
     if (message->getType() != common::MessageType::DATA_PACKET) {
