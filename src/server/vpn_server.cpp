@@ -791,25 +791,39 @@ SessionPtr VPNServer::findOrCreateSession(const struct sockaddr_in& client_addr)
         if (existing_addr.sin_addr.s_addr == client_addr.sin_addr.s_addr) {
             auto current_state = pair.second->getState();
             
-            // 如果会话还在活跃状态，只更新端点
-            if (current_state == SessionState::ACTIVE || current_state == SessionState::AUTHENTICATED) {
+            // 如果会话在正常的连接过程中，只更新端点和活跃时间
+            if (current_state == SessionState::ACTIVE || 
+                current_state == SessionState::AUTHENTICATED ||
+                current_state == SessionState::CONNECTING ||
+                current_state == SessionState::HANDSHAKING ||
+                current_state == SessionState::AUTHENTICATING) {
+                
                 pair.second->setEndpoint(client_addr);
                 pair.second->updateLastActivity();
                 
-                std::cout << "Updating endpoint for active session, client IP: " << inet_ntoa(client_addr.sin_addr) 
+                std::cout << "Updating endpoint for existing session, client IP: " << inet_ntoa(client_addr.sin_addr) 
                           << " (ID: " << pair.first << ", new port: " << ntohs(client_addr.sin_port) 
                           << ", state: " << static_cast<int>(current_state) << ")" << std::endl;
                 return pair.second;
             }
             
-            // 如果会话处于非活跃状态，需要完全重置
-            std::cout << "Found stale session for client IP: " << inet_ntoa(client_addr.sin_addr) 
-                      << " (ID: " << pair.first << ", state: " << static_cast<int>(current_state) 
-                      << "), removing and creating new session" << std::endl;
+            // 只有在会话真正处于错误状态时才删除
+            if (current_state == SessionState::DISCONNECTED || 
+                current_state == SessionState::DISCONNECTING) {
+                
+                std::cout << "Found disconnected session for client IP: " << inet_ntoa(client_addr.sin_addr) 
+                          << " (ID: " << pair.first << ", state: " << static_cast<int>(current_state) 
+                          << "), removing and creating new session" << std::endl;
+                
+                // 移除旧会话
+                removeSession(pair.first);
+                break; // 退出循环，创建新会话
+            }
             
-            // 移除旧会话
-            removeSession(pair.first);
-            break; // 退出循环，创建新会话
+            // 其他情况直接返回现有会话
+            std::cout << "Reusing existing session for client IP: " << inet_ntoa(client_addr.sin_addr) 
+                      << " (ID: " << pair.first << ", state: " << static_cast<int>(current_state) << ")" << std::endl;
+            return pair.second;
         }
     }
     
