@@ -347,6 +347,10 @@ void VPNServer::handleClientMessage(const struct sockaddr_in& client_addr,
     }
     
     // 根据消息类型处理
+    std::cout << "Processing message type: " << static_cast<int>(message->getType()) 
+              << " from client " << session->getClientId() 
+              << " (state: " << static_cast<int>(session->getState()) << ")" << std::endl;
+    
     switch (message->getType()) {
         case common::MessageType::HANDSHAKE_INIT:
             handleHandshakeInit(session, message.get());
@@ -384,7 +388,8 @@ void VPNServer::handleHandshakeInit(SessionPtr session, const common::SecureMess
         return;
     }
     
-    std::cout << "Handling handshake init from client " << session->getClientId() << std::endl;
+    std::cout << "Handling handshake init from client " << session->getClientId() 
+              << ", current state: " << static_cast<int>(session->getState()) << std::endl;
     
     // 初始化安全协议上下文
     if (!session->initializeSecureProtocol()) {
@@ -625,6 +630,9 @@ void VPNServer::handleKeepAlive(SessionPtr session, const common::SecureMessage*
               << ", State: " << static_cast<int>(session->getState()) << std::endl;
     
     // 发送keepalive响应
+    std::cout << "Creating keepalive response for client " << session->getClientId() 
+              << ", handshake_complete: " << (session->isHandshakeComplete() ? "yes" : "no") << std::endl;
+    
     auto response = session->createSecureMessage(common::MessageType::KEEPALIVE);
     if (response) {
         if (sendSecureMessage(session, std::move(response))) {
@@ -633,7 +641,8 @@ void VPNServer::handleKeepAlive(SessionPtr session, const common::SecureMessage*
             std::cout << "Failed to send keepalive response to client " << session->getClientId() << std::endl;
         }
     } else {
-        std::cout << "Failed to create keepalive response for client " << session->getClientId() << std::endl;
+        std::cout << "Failed to create keepalive response for client " << session->getClientId() 
+                  << " (secure_context is null)" << std::endl;
     }
 }
 
@@ -780,16 +789,27 @@ SessionPtr VPNServer::findOrCreateSession(const struct sockaddr_in& client_addr)
     for (auto& pair : sessions_) {
         const struct sockaddr_in& existing_addr = pair.second->getEndpoint();
         if (existing_addr.sin_addr.s_addr == client_addr.sin_addr.s_addr) {
-            // 找到相同IP的会话，更新端点信息并返回
-            pair.second->setEndpoint(client_addr);
+            auto current_state = pair.second->getState();
             
-            // 重置会话状态，允许重新握手
-            pair.second->setState(SessionState::CONNECTING);
-            pair.second->updateLastActivity();
+            // 如果会话还在活跃状态，只更新端点
+            if (current_state == SessionState::ACTIVE || current_state == SessionState::AUTHENTICATED) {
+                pair.second->setEndpoint(client_addr);
+                pair.second->updateLastActivity();
+                
+                std::cout << "Updating endpoint for active session, client IP: " << inet_ntoa(client_addr.sin_addr) 
+                          << " (ID: " << pair.first << ", new port: " << ntohs(client_addr.sin_port) 
+                          << ", state: " << static_cast<int>(current_state) << ")" << std::endl;
+                return pair.second;
+            }
             
-            std::cout << "Reusing existing session for client IP: " << inet_ntoa(client_addr.sin_addr) 
-                      << " (ID: " << pair.first << ", new port: " << ntohs(client_addr.sin_port) << ")" << std::endl;
-            return pair.second;
+            // 如果会话处于非活跃状态，需要完全重置
+            std::cout << "Found stale session for client IP: " << inet_ntoa(client_addr.sin_addr) 
+                      << " (ID: " << pair.first << ", state: " << static_cast<int>(current_state) 
+                      << "), removing and creating new session" << std::endl;
+            
+            // 移除旧会话
+            removeSession(pair.first);
+            break; // 退出循环，创建新会话
         }
     }
     
