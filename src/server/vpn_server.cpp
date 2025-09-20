@@ -626,13 +626,28 @@ void VPNServer::handleKeepAlive(SessionPtr session, const common::SecureMessage*
     // 显式更新活跃时间（确保心跳包能重置超时计时器）
     session->updateLastActivity();
     
-    // 简化心跳包日志
-    // std::cout << "Keepalive from client " << session->getClientId() << std::endl;
+    std::cout << "Handling keepalive from client " << session->getClientId() 
+              << ", state: " << static_cast<int>(session->getState()) 
+              << ", handshake_complete: " << (session->isHandshakeComplete() ? "yes" : "no") << std::endl;
+    
+    // 检查会话状态是否适合发送响应
+    if (session->getState() != SessionState::ACTIVE) {
+        std::cout << "Skipping keepalive response - client " << session->getClientId() 
+                  << " not in ACTIVE state (current: " << static_cast<int>(session->getState()) << ")" << std::endl;
+        return;
+    }
     
     auto response = session->createSecureMessage(common::MessageType::KEEPALIVE);
     if (response) {
+        // 为心跳响应设置空载荷
+        const std::string keepalive_data = "PONG";
+        response->setPayload(reinterpret_cast<const uint8_t*>(keepalive_data.c_str()), 
+                           keepalive_data.length());
+        
         if (!sendSecureMessage(session, std::move(response))) {
             std::cout << "Failed to send keepalive response to client " << session->getClientId() << std::endl;
+        } else {
+            std::cout << "Keepalive response sent to client " << session->getClientId() << std::endl;
         }
     } else {
         std::cout << "Failed to create keepalive response for client " << session->getClientId() 
@@ -687,20 +702,10 @@ bool VPNServer::sendSecureMessage(SessionPtr session, std::unique_ptr<common::Se
                       << ", handshake_complete: " << (session->isHandshakeComplete() ? "yes" : "no")
                       << ", session_state: " << static_cast<int>(session->getState()) << std::endl;
             
-            // 尝试重新初始化安全协议上下文
-            if (!session->initializeSecureProtocol()) {
-                std::cerr << "Failed to reinitialize secure protocol for client " << session->getClientId() << std::endl;
-                return false;
-            } else {
-                std::cout << "Reinitialized secure protocol for client " << session->getClientId() << std::endl;
-                // 重新尝试加密
-                if (!session->encryptMessage(*message)) {
-                    std::cerr << "Encryption still failed after reinitializing for client " << session->getClientId() << std::endl;
-                    return false;
-                } else {
-                    std::cout << "Encryption succeeded after reinitializing for client " << session->getClientId() << std::endl;
-                }
-            }
+            // 加密失败，但不要重新初始化，因为这会破坏已建立的连接
+            // 对于已建立连接的会话，加密失败可能是临时问题
+            std::cerr << "Skipping message due to encryption failure for client " << session->getClientId() << std::endl;
+            return false;
         }
     }
     
