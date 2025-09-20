@@ -17,10 +17,22 @@ LinuxVPNClient::LinuxVPNClient()
 }
 
 LinuxVPNClient::~LinuxVPNClient() {
-    // 安全析构：强制停止所有活动
+    // 安全析构：首先尝试优雅断开
+    try {
+        if (connection_state_.load() != ConnectionState::DISCONNECTED) {
+            disconnect();
+        }
+    } catch (...) {
+        // 如果优雅断开失败，强制清理
+    }
+    
+    // 强制停止标志
     should_stop_.store(true);
     
-    // 关闭所有资源
+    // 通知所有等待的线程
+    outbound_queue_cv_.notify_all();
+    
+    // 强制关闭所有资源
     closeSocket();
     if (tun_interface_) {
         try {
@@ -30,21 +42,33 @@ LinuxVPNClient::~LinuxVPNClient() {
         }
     }
     
-    // 分离所有线程
-    if (connection_thread_.joinable()) {
-        connection_thread_.detach();
-    }
-    if (tun_reader_thread_.joinable()) {
-        tun_reader_thread_.detach();
-    }
-    if (network_reader_thread_.joinable()) {
-        network_reader_thread_.detach();
-    }
-    if (network_writer_thread_.joinable()) {
-        network_writer_thread_.detach();
-    }
-    if (keepalive_thread_.joinable()) {
-        keepalive_thread_.detach();
+    // 等待线程结束（析构时给较短的时间）
+    const auto cleanup_timeout = std::chrono::milliseconds(1000); // 1秒
+    
+    std::vector<std::thread*> threads = {
+        &connection_thread_,
+        &tun_reader_thread_,
+        &network_reader_thread_, 
+        &network_writer_thread_,
+        &keepalive_thread_
+    };
+    
+    for (auto* thread : threads) {
+        if (thread->joinable()) {
+            try {
+                auto thread_start = std::chrono::steady_clock::now();
+                while (thread->joinable() && 
+                       std::chrono::steady_clock::now() - thread_start < std::chrono::milliseconds(200)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                
+                if (thread->joinable()) {
+                    thread->detach(); // 强制分离
+                }
+            } catch (...) {
+                // 忽略析构时的异常
+            }
+        }
     }
 }
 
@@ -54,6 +78,13 @@ bool LinuxVPNClient::connect(const ConnectionConfig& config) {
     std::lock_guard<std::mutex> connect_lock(connect_mutex);
     
     auto current_state = connection_state_.load();
+    
+    // 防止在连接过程中重复调用
+    if (current_state == ConnectionState::CONNECTING || 
+        current_state == ConnectionState::AUTHENTICATING) {
+        logMessage("Connection already in progress, ignoring new request");
+        return false;
+    }
     
     // 如果正在连接或已连接，先优雅断开
     if (current_state != ConnectionState::DISCONNECTED) {
@@ -149,7 +180,6 @@ void LinuxVPNClient::disconnect() {
     closeSocket();
     
     // 尝试优雅地等待线程结束
-    auto cleanup_start = std::chrono::steady_clock::now();
     const auto cleanup_timeout = std::chrono::seconds(3);
     
     std::vector<std::thread*> threads = {
@@ -258,19 +288,22 @@ void LinuxVPNClient::connectionThreadFunc() {
         // 4. 执行握手协议
         setState(ConnectionState::AUTHENTICATING);
         if (!performHandshake()) {
-            setState(ConnectionState::DISCONNECTED);
+            logMessage("Handshake failed, cleaning up...");
+            setState(ConnectionState::ERROR_STATE);
             return;
         }
         
         // 5. 身份验证
         if (!authenticateWithServer()) {
-            setState(ConnectionState::DISCONNECTED);
+            logMessage("Authentication failed, cleaning up...");
+            setState(ConnectionState::ERROR_STATE);
             return;
         }
         
         // 6. 设置隧道
         if (!setupTunnel()) {
-            setState(ConnectionState::DISCONNECTED);
+            logMessage("Tunnel setup failed, cleaning up...");
+            setState(ConnectionState::ERROR_STATE);
             return;
         }
         
@@ -289,11 +322,80 @@ void LinuxVPNClient::connectionThreadFunc() {
         
     } catch (const std::exception& e) {
         setLastError("Connection thread error: " + std::string(e.what()));
-        setState(ConnectionState::DISCONNECTED);
+        logMessage("Exception in connection thread: " + std::string(e.what()));
+    } catch (...) {
+        setLastError("Unknown error in connection thread");
+        logMessage("Unknown exception in connection thread");
     }
     
-    // 确保在线程结束时状态为DISCONNECTED
-    if (connection_state_.load() != ConnectionState::DISCONNECTED) {
+    // 确保在线程结束时进行清理
+    try {
+        // 设置停止标志
+        should_stop_.store(true);
+        
+        // 通知所有等待的线程
+        outbound_queue_cv_.notify_all();
+        
+        // 关闭网络资源
+        closeSocket();
+        if (tun_interface_) {
+            tun_interface_->closeInterface();
+        }
+        
+        // 等待网络线程结束（它们是在这个连接线程中启动的）
+        if (network_reader_thread_.joinable()) {
+            try {
+                network_reader_thread_.join();
+                logMessage("Network reader thread joined");
+            } catch (...) {
+                logMessage("Exception joining network reader thread");
+            }
+        }
+        
+        if (network_writer_thread_.joinable()) {
+            try {
+                network_writer_thread_.join();
+                logMessage("Network writer thread joined");
+            } catch (...) {
+                logMessage("Exception joining network writer thread");
+            }
+        }
+        
+        if (tun_reader_thread_.joinable()) {
+            try {
+                tun_reader_thread_.join();
+                logMessage("TUN reader thread joined");
+            } catch (...) {
+                logMessage("Exception joining TUN reader thread");
+            }
+        }
+        
+        if (keepalive_thread_.joinable()) {
+            try {
+                keepalive_thread_.join();
+                logMessage("Keepalive thread joined");
+            } catch (...) {
+                logMessage("Exception joining keepalive thread");
+            }
+        }
+        
+        // 清理队列
+        {
+            std::lock_guard<std::mutex> queue_lock(outbound_queue_mutex_);
+            while (!outbound_queue_.empty()) {
+                outbound_queue_.pop();
+            }
+        }
+        
+        // 重置安全上下文
+        secure_context_.reset();
+        
+        // 确保状态为DISCONNECTED
+        setState(ConnectionState::DISCONNECTED);
+        logMessage("Connection thread cleanup completed");
+        
+    } catch (...) {
+        // 忽略清理时的异常
         setState(ConnectionState::DISCONNECTED);
     }
 }
@@ -455,16 +557,28 @@ void LinuxVPNClient::networkReaderThreadFunc() {
     
     uint8_t buffer[NETWORK_BUFFER_SIZE];
     
-    while (!should_stop_.load()) {
-        size_t received_length;
-        if (receiveFromServer(buffer, sizeof(buffer), &received_length)) {
-            if (received_length > 0) {
-                logMessage("Received " + std::to_string(received_length) + " bytes from server");
-                processNetworkPacket(buffer, received_length);
+    try {
+        while (!should_stop_.load()) {
+            size_t received_length;
+            if (receiveFromServer(buffer, sizeof(buffer), &received_length)) {
+                if (received_length > 0) {
+                    logMessage("Received " + std::to_string(received_length) + " bytes from server");
+                    if (!processNetworkPacket(buffer, received_length)) {
+                        logMessage("Failed to process network packet");
+                    }
+                }
+            } else {
+                // 如果套接字已关闭，退出循环
+                if (udp_socket_ < 0) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
-        } else {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
+    } catch (const std::exception& e) {
+        logMessage("Exception in network reader thread: " + std::string(e.what()));
+    } catch (...) {
+        logMessage("Unknown exception in network reader thread");
     }
     
     logMessage("Network reader thread stopped");
@@ -473,25 +587,37 @@ void LinuxVPNClient::networkReaderThreadFunc() {
 void LinuxVPNClient::networkWriterThreadFunc() {
     logMessage("Network writer thread started");
     
-    while (!should_stop_.load()) {
-        std::unique_lock<std::mutex> lock(outbound_queue_mutex_);
-        outbound_queue_cv_.wait(lock, [this] { 
-            return !outbound_queue_.empty() || should_stop_.load(); 
-        });
-        
-        if (should_stop_.load()) {
-            break;
-        }
-        
-        while (!outbound_queue_.empty()) {
-            auto packet = std::move(outbound_queue_.front());
-            outbound_queue_.pop();
-            lock.unlock();
+    try {
+        while (!should_stop_.load()) {
+            std::unique_lock<std::mutex> lock(outbound_queue_mutex_);
+            outbound_queue_cv_.wait(lock, [this] { 
+                return !outbound_queue_.empty() || should_stop_.load(); 
+            });
             
-            sendToServer(packet.data(), packet.size());
+            if (should_stop_.load()) {
+                break;
+            }
             
-            lock.lock();
+            while (!outbound_queue_.empty()) {
+                auto packet = std::move(outbound_queue_.front());
+                outbound_queue_.pop();
+                lock.unlock();
+                
+                if (!sendToServer(packet.data(), packet.size())) {
+                    // 发送失败，可能是套接字已关闭
+                    if (udp_socket_ < 0) {
+                        logMessage("Socket closed, stopping network writer");
+                        return;
+                    }
+                }
+                
+                lock.lock();
+            }
         }
+    } catch (const std::exception& e) {
+        logMessage("Exception in network writer thread: " + std::string(e.what()));
+    } catch (...) {
+        logMessage("Unknown exception in network writer thread");
     }
     
     logMessage("Network writer thread stopped");
