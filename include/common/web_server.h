@@ -231,6 +231,8 @@ public:
     virtual std::string getLastError() const = 0;
     virtual BandwidthTestResult performBandwidthTest(uint32_t test_duration_seconds = 10, uint32_t test_size_mb = 5) = 0;
     virtual bool testInterface() = 0;  // 测试网络接口功能
+    virtual std::string getVirtualIP() const = 0;  // 获取分配的虚拟IP地址
+    virtual std::string getServerIP() const = 0;   // 获取连接的服务器IP地址
 };
 
 /**

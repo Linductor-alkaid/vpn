@@ -386,6 +386,8 @@ std::string WebServer::apiStatus() {
         json << "\"bytes_received\": " << stats.bytes_received << ",";
         json << "\"packets_sent\": " << stats.packets_sent << ",";
         json << "\"packets_received\": " << stats.packets_received << ",";
+        json << "\"virtual_ip\": \"" << vpn_client_->getVirtualIP() << "\",";
+        json << "\"server_ip\": \"" << vpn_client_->getServerIP() << "\",";
         json << "\"last_error\": \"" << vpn_client_->getLastError() << "\"";
     } else {
         json << "\"connected\": false,";
@@ -738,6 +740,20 @@ std::string WebServer::getMainPage() {
             <strong>状态:</strong> <span id='status-text'>未连接</span>
         </div>
         
+        <div id='connection-info' style='display: none; background: #e9ecef; padding: 15px; border-radius: 5px; margin: 20px 0;'>
+            <h4>连接信息</h4>
+            <div style='display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px;'>
+                <div class='stat-card'>
+                    <div class='stat-value' id='virtual-ip'>-</div>
+                    <div class='stat-label'>虚拟IP地址</div>
+                </div>
+                <div class='stat-card'>
+                    <div class='stat-value' id='server-ip'>-</div>
+                    <div class='stat-label'>服务器地址</div>
+                </div>
+            </div>
+        </div>
+        
         <div class='stats'>
             <div class='stat-card'>
                 <div class='stat-value' id='bytes-sent'>0</div>
@@ -826,6 +842,16 @@ std::string WebServer::getMainPage() {
                     document.getElementById('connect-btn').disabled = isConnected;
                     document.getElementById('disconnect-btn').disabled = !isConnected;
                     document.getElementById('bandwidth-btn').disabled = !isConnected;
+                    
+                    // 显示或隐藏连接信息
+                    const connectionInfo = document.getElementById('connection-info');
+                    if (isConnected) {
+                        connectionInfo.style.display = 'block';
+                        document.getElementById('virtual-ip').textContent = data.virtual_ip || '-';
+                        document.getElementById('server-ip').textContent = data.server_ip || '-';
+                    } else {
+                        connectionInfo.style.display = 'none';
+                    }
                     
                     document.getElementById('bytes-sent').textContent = formatBytes(data.bytes_sent);
                     document.getElementById('bytes-received').textContent = formatBytes(data.bytes_received);

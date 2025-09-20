@@ -231,6 +231,12 @@ void LinuxVPNClient::disconnect() {
     // 重置安全上下文
     secure_context_.reset();
     
+    // 清理虚拟IP
+    {
+        std::lock_guard<std::mutex> lock(virtual_ip_mutex_);
+        assigned_virtual_ip_.clear();
+    }
+    
     setState(ConnectionState::DISCONNECTED);
     logMessage("VPN connection disconnected safely");
 }
@@ -262,6 +268,15 @@ bool LinuxVPNClient::testInterface() {
     }
     
     return true;
+}
+
+std::string LinuxVPNClient::getVirtualIP() const {
+    std::lock_guard<std::mutex> lock(virtual_ip_mutex_);
+    return assigned_virtual_ip_;
+}
+
+std::string LinuxVPNClient::getServerIP() const {
+    return config_.server_address;
 }
 
 void LinuxVPNClient::connectionThreadFunc() {
@@ -711,6 +726,21 @@ bool LinuxVPNClient::processNetworkPacket(const uint8_t* data, size_t length) {
                 
                 // 解析认证响应
                 if (response.find("\"status\":\"success\"") != std::string::npos) {
+                    // 提取虚拟IP地址
+                    size_t ip_pos = response.find("\"virtual_ip\":\"");
+                    if (ip_pos != std::string::npos) {
+                        size_t start = ip_pos + 14;
+                        size_t end = response.find("\"", start);
+                        if (end != std::string::npos) {
+                            std::string virtual_ip = response.substr(start, end - start);
+                            {
+                                std::lock_guard<std::mutex> lock(virtual_ip_mutex_);
+                                assigned_virtual_ip_ = virtual_ip;
+                            }
+                            logMessage("Assigned virtual IP: " + virtual_ip);
+                        }
+                    }
+                    
                     setState(ConnectionState::CONNECTED);
                     logMessage("Authentication successful");
                 } else {

@@ -138,6 +138,13 @@ private:
     std::unordered_map<std::string, ClientId> ip_to_client_; // 虚拟IP到客户端ID映射
     ClientId next_client_id_{1};
     
+    // IP地址池管理
+    mutable std::mutex ip_pool_mutex_;
+    std::set<uint32_t> allocated_ips_;     // 已分配的IP地址（主机字节序）
+    uint32_t base_ip_{0};                  // 基础IP地址（如10.8.0.0）
+    uint32_t netmask_{0};                  // 网络掩码
+    uint32_t next_ip_offset_{2};           // 下一个可分配的IP偏移（从.2开始）
+    
     // 路由管理
     std::unique_ptr<PacketRouter> packet_router_;
     

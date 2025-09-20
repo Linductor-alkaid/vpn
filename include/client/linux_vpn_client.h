@@ -43,6 +43,8 @@ public:
     std::string getLastError() const override;
     BandwidthTestResult performBandwidthTest(uint32_t test_duration_seconds = 10, uint32_t test_size_mb = 5) override;
     bool testInterface() override;
+    std::string getVirtualIP() const override;
+    std::string getServerIP() const override;
 
     /**
      * @brief 设置日志回调
@@ -94,6 +96,10 @@ private:
     // 连接状态
     std::atomic<ConnectionState> connection_state_{ConnectionState::DISCONNECTED};
     std::atomic<bool> should_stop_{false};
+    
+    // 连接信息
+    std::string assigned_virtual_ip_;
+    mutable std::mutex virtual_ip_mutex_;
     
     // 网络套接字
     int udp_socket_{-1};
