@@ -142,6 +142,13 @@ bool VPNServer::start(const ServerConfig& config) {
     
     packet_router_->setDebugMode(config.isDebugMode());
     
+    // Initialize IP address pool
+    if (!initializeIPPool()) {
+        std::cerr << "Failed to initialize IP address pool" << std::endl;
+        closeSocket();
+        return false;
+    }
+    
     // Set running flags
     running_.store(true);
     should_stop_.store(false);
@@ -492,7 +499,19 @@ void VPNServer::handleAuthRequest(SessionPtr session, const common::SecureMessag
     // 进行认证
     if (session->authenticate(username, password, client_version, config_.get())) {
         // 分配虚拟IP
-        std::string virtual_ip = "10.8.0." + std::to_string(session->getClientId() + 1);
+        std::string virtual_ip = allocateVirtualIP();
+        if (virtual_ip.empty()) {
+            std::cerr << "Failed to allocate virtual IP for client " << session->getClientId() << std::endl;
+            auto error_response = session->createSecureMessage(common::MessageType::ERROR_RESPONSE);
+            if (error_response) {
+                std::string error_msg = "{\"error\":\"no_available_ip\"}";
+                error_response->setPayload(reinterpret_cast<const uint8_t*>(error_msg.c_str()), 
+                                         error_msg.length());
+                sendSecureMessage(session, std::move(error_response));
+            }
+            return;
+        }
+        
         session->assignVirtualIP(virtual_ip);
         
         // 创建认证响应
@@ -750,9 +769,10 @@ void VPNServer::removeSession(ClientId client_id) {
             packet_router_->removeClientRoute(client_id);
         }
         
-        // Remove from IP mapping
+        // Remove from IP mapping and release IP
         if (!virtual_ip.empty()) {
             ip_to_client_.erase(virtual_ip);
+            releaseVirtualIP(virtual_ip);
         }
         
         sessions_.erase(it);
@@ -856,6 +876,104 @@ void VPNServer::closeSocket() {
         close(udp_socket_);
 #endif
         udp_socket_ = -1;
+    }
+}
+
+bool VPNServer::initializeIPPool() {
+    if (!config_) {
+        return false;
+    }
+    
+    std::lock_guard<std::mutex> lock(ip_pool_mutex_);
+    
+    // 解析基础网络地址
+    std::string network = config_->getVirtualNetwork();
+    std::string netmask = config_->getVirtualNetmask();
+    
+    struct in_addr addr;
+    if (inet_aton(network.c_str(), &addr) == 0) {
+        std::cerr << "Invalid virtual network: " << network << std::endl;
+        return false;
+    }
+    base_ip_ = ntohl(addr.s_addr);
+    
+    if (inet_aton(netmask.c_str(), &addr) == 0) {
+        std::cerr << "Invalid netmask: " << netmask << std::endl;
+        return false;
+    }
+    netmask_ = ntohl(addr.s_addr);
+    
+    // 清空已分配IP列表
+    allocated_ips_.clear();
+    next_ip_offset_ = 2; // 从.2开始分配（.1通常是网关）
+    
+    std::cout << "IP pool initialized: " << network << "/" << netmask 
+              << ", starting from offset " << next_ip_offset_ << std::endl;
+    
+    return true;
+}
+
+std::string VPNServer::allocateVirtualIP() {
+    std::lock_guard<std::mutex> lock(ip_pool_mutex_);
+    
+    // 计算网络中可用的主机数量
+    uint32_t host_mask = ~netmask_;
+    uint32_t max_hosts = host_mask - 1; // 减去广播地址
+    
+    // 寻找下一个可用的IP
+    for (uint32_t offset = next_ip_offset_; offset <= max_hosts; ++offset) {
+        uint32_t ip_uint = base_ip_ + offset;
+        
+        // 检查这个IP是否已被分配
+        if (allocated_ips_.find(ip_uint) == allocated_ips_.end()) {
+            // 分配这个IP
+            allocated_ips_.insert(ip_uint);
+            next_ip_offset_ = offset + 1;
+            
+            // 转换为字符串
+            struct in_addr addr;
+            addr.s_addr = htonl(ip_uint);
+            std::string ip_str = inet_ntoa(addr);
+            
+            std::cout << "Allocated virtual IP: " << ip_str << " (offset: " << offset << ")" << std::endl;
+            return ip_str;
+        }
+    }
+    
+    // 如果没有找到可用IP，从头开始搜索（处理IP回收的情况）
+    for (uint32_t offset = 2; offset < next_ip_offset_; ++offset) {
+        uint32_t ip_uint = base_ip_ + offset;
+        
+        if (allocated_ips_.find(ip_uint) == allocated_ips_.end()) {
+            allocated_ips_.insert(ip_uint);
+            
+            struct in_addr addr;
+            addr.s_addr = htonl(ip_uint);
+            std::string ip_str = inet_ntoa(addr);
+            
+            std::cout << "Allocated virtual IP: " << ip_str << " (offset: " << offset << ", recycled)" << std::endl;
+            return ip_str;
+        }
+    }
+    
+    std::cerr << "No available virtual IP addresses in pool" << std::endl;
+    return ""; // 没有可用IP
+}
+
+void VPNServer::releaseVirtualIP(const std::string& ip) {
+    std::lock_guard<std::mutex> lock(ip_pool_mutex_);
+    
+    struct in_addr addr;
+    if (inet_aton(ip.c_str(), &addr) == 0) {
+        std::cerr << "Invalid IP address to release: " << ip << std::endl;
+        return;
+    }
+    
+    uint32_t ip_uint = ntohl(addr.s_addr);
+    auto it = allocated_ips_.find(ip_uint);
+    if (it != allocated_ips_.end()) {
+        allocated_ips_.erase(it);
+        std::cout << "Released virtual IP: " << ip << std::endl;
     }
 }
 

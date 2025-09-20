@@ -8,6 +8,7 @@
 #include <atomic>
 #include <mutex>
 #include <thread>
+#include <set>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -111,6 +112,11 @@ private:
     SessionPtr findOrCreateSession(const struct sockaddr_in& client_addr);
     void removeSession(ClientId client_id);
     void cleanupInactiveSessions();
+    
+    // IP地址池管理
+    std::string allocateVirtualIP();
+    void releaseVirtualIP(const std::string& ip);
+    bool initializeIPPool();
     
     // 数据包路由
     void routePacketToClient(const uint8_t* data, size_t length, 
