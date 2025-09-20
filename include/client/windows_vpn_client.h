@@ -53,7 +53,7 @@ public:
         std::string tap_adapter_name;
         std::string virtual_ip;
         std::string virtual_netmask = "255.255.255.0";
-        uint32_t keepalive_interval = 30; // 秒
+        uint32_t keepalive_interval = 1; // 秒（缩短心跳周期提高清理效率）
         uint32_t connection_timeout = 10; // 秒
         bool auto_reconnect = true;
         uint32_t max_reconnect_attempts = 5;

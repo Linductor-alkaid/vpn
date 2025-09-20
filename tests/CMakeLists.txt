@@ -35,6 +35,12 @@ if(TARGET sduvpn-crypto)
         # 创建SHA-256标准测试向量可执行文件
         add_executable(test_sha256_vectors test_sha256_vectors.cpp)
         
+        # 创建ECDH安全测试可执行文件
+        add_executable(test_ecdh_security test_ecdh_security.cpp)
+        
+        # 创建ECDH测试向量可执行文件
+        add_executable(test_ecdh_vectors test_ecdh_vectors.cpp)
+        
         # 创建密钥派生测试向量可执行文件
         add_executable(test_key_derivation_vectors test_key_derivation_vectors.cpp)
         
@@ -64,6 +70,20 @@ if(TARGET sduvpn-crypto)
         )
         
         target_link_libraries(test_sha256_vectors 
+            PRIVATE 
+                sduvpn-crypto
+                gtest
+                gtest_main
+        )
+        
+        target_link_libraries(test_ecdh_security 
+            PRIVATE 
+                sduvpn-crypto
+                gtest
+                gtest_main
+        )
+        
+        target_link_libraries(test_ecdh_vectors 
             PRIVATE 
                 sduvpn-crypto
                 gtest
@@ -111,6 +131,20 @@ if(TARGET sduvpn-crypto)
             OUTPUT_NAME "test_sha256_vectors"
         )
         
+        set_target_properties(test_ecdh_security PROPERTIES
+            CXX_STANDARD 17
+            CXX_STANDARD_REQUIRED ON
+            CXX_EXTENSIONS OFF
+            OUTPUT_NAME "test_ecdh_security"
+        )
+        
+        set_target_properties(test_ecdh_vectors PROPERTIES
+            CXX_STANDARD 17
+            CXX_STANDARD_REQUIRED ON
+            CXX_EXTENSIONS OFF
+            OUTPUT_NAME "test_ecdh_vectors"
+        )
+        
         set_target_properties(test_key_derivation_vectors PROPERTIES
             CXX_STANDARD 17
             CXX_STANDARD_REQUIRED ON
@@ -139,6 +173,16 @@ if(TARGET sduvpn-crypto)
         )
         
         target_include_directories(test_sha256_vectors 
+            PRIVATE 
+                ${CMAKE_SOURCE_DIR}/include
+        )
+        
+        target_include_directories(test_ecdh_security 
+            PRIVATE 
+                ${CMAKE_SOURCE_DIR}/include
+        )
+        
+        target_include_directories(test_ecdh_vectors 
             PRIVATE 
                 ${CMAKE_SOURCE_DIR}/include
         )

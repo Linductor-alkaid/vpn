@@ -28,7 +28,7 @@ void ServerConfig::setDefaults() {
     
     // 客户端管理默认值
     max_clients_ = 100;
-    client_timeout_seconds_ = 300; // 5分钟
+    client_timeout_seconds_ = 5; // 5秒（心跳间隔1秒，5秒无心跳认为断开）
     
     // 安全配置默认值
     server_certificate_ = "";

@@ -63,7 +63,13 @@ LinuxVPNClient::~LinuxVPNClient() {
                 }
                 
                 if (thread->joinable()) {
-                    thread->detach(); // 强制分离
+                    // 析构时优先使用join()，避免detach()导致的内存安全问题
+                    try {
+                        thread->join();
+                    } catch (...) {
+                        // 只有在join失败时才使用detach作为最后手段
+                        thread->detach();
+                    }
                 }
             } catch (...) {
                 // 忽略析构时的异常
@@ -93,13 +99,13 @@ bool LinuxVPNClient::connect(const ConnectionConfig& config) {
         // 优雅断开
         disconnect();
         
-        // 等待断开完成
+        // 等待断开完成（缩短超时时间）
         auto disconnect_start = std::chrono::steady_clock::now();
-        const auto disconnect_timeout = std::chrono::seconds(5);
+        const auto disconnect_timeout = std::chrono::seconds(2);
         
         while (connection_state_.load() != ConnectionState::DISCONNECTED && 
                std::chrono::steady_clock::now() - disconnect_start < disconnect_timeout) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         
         // 如果优雅断开失败，强制清理
@@ -111,9 +117,9 @@ bool LinuxVPNClient::connect(const ConnectionConfig& config) {
                 tun_interface_->closeInterface();
             }
             
-            // 等待线程结束（最多2秒）
+            // 等待线程结束（最多1秒）
             auto cleanup_start = std::chrono::steady_clock::now();
-            const auto cleanup_timeout = std::chrono::seconds(2);
+            const auto cleanup_timeout = std::chrono::seconds(1);
             
             while (std::chrono::steady_clock::now() - cleanup_start < cleanup_timeout) {
                 bool all_finished = true;
@@ -124,15 +130,17 @@ bool LinuxVPNClient::connect(const ConnectionConfig& config) {
                 if (keepalive_thread_.joinable()) all_finished = false;
                 
                 if (all_finished) break;
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
             
-            // 强制分离剩余线程
+            // 强制分离剩余线程（快速清理，避免阻塞）
             if (connection_thread_.joinable()) connection_thread_.detach();
             if (tun_reader_thread_.joinable()) tun_reader_thread_.detach();
             if (network_reader_thread_.joinable()) network_reader_thread_.detach();
             if (network_writer_thread_.joinable()) network_writer_thread_.detach();
             if (keepalive_thread_.joinable()) keepalive_thread_.detach();
+            
+            logMessage("All threads detached during forced cleanup");
             
             setState(ConnectionState::DISCONNECTED);
         }
@@ -153,6 +161,11 @@ bool LinuxVPNClient::connect(const ConnectionConfig& config) {
     }
     
     setState(ConnectionState::CONNECTING);
+    
+    // 快速清理之前的连接线程
+    if (connection_thread_.joinable()) {
+        connection_thread_.detach();
+    }
     
     // 启动新的连接线程
     connection_thread_ = std::thread(&LinuxVPNClient::connectionThreadFunc, this);
@@ -193,15 +206,16 @@ void LinuxVPNClient::disconnect() {
     for (auto* thread : threads) {
         if (thread->joinable()) {
             try {
-                // 给每个线程最多500ms时间结束
+                // 给每个线程最多200ms时间结束
                 auto thread_start = std::chrono::steady_clock::now();
                 while (thread->joinable() && 
-                       std::chrono::steady_clock::now() - thread_start < std::chrono::milliseconds(500)) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                       std::chrono::steady_clock::now() - thread_start < std::chrono::milliseconds(200)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 }
                 
                 if (thread->joinable()) {
-                    thread->detach(); // 如果还没结束，强制分离
+                    // 使用detach()来避免长时间阻塞，但确保线程能安全结束
+                    thread->detach();
                     logMessage("Thread detached due to timeout");
                 }
             } catch (...) {
@@ -289,7 +303,15 @@ void LinuxVPNClient::connectionThreadFunc() {
             return;
         }
         
-        // 2. 启动网络读取线程（需要在握手前启动以接收响应）
+        // 2. 快速清理之前的网络线程
+        if (network_reader_thread_.joinable()) {
+            network_reader_thread_.detach();
+        }
+        if (network_writer_thread_.joinable()) {
+            network_writer_thread_.detach();
+        }
+        
+        // 启动网络读取线程（需要在握手前启动以接收响应）
         network_reader_thread_ = std::thread(&LinuxVPNClient::networkReaderThreadFunc, this);
         network_writer_thread_ = std::thread(&LinuxVPNClient::networkWriterThreadFunc, this);
         
@@ -322,7 +344,15 @@ void LinuxVPNClient::connectionThreadFunc() {
             return;
         }
         
-        // 7. 启动剩余的数据处理线程
+        // 7. 快速清理之前的数据处理线程
+        if (tun_reader_thread_.joinable()) {
+            tun_reader_thread_.detach();
+        }
+        if (keepalive_thread_.joinable()) {
+            keepalive_thread_.detach();
+        }
+        
+        // 启动剩余的数据处理线程
         tun_reader_thread_ = std::thread(&LinuxVPNClient::tunReaderThreadFunc, this);
         keepalive_thread_ = std::thread(&LinuxVPNClient::keepaliveThreadFunc, this);
         

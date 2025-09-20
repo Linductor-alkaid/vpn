@@ -211,6 +211,20 @@ void VPNServer::stop() {
 
 size_t VPNServer::getClientCount() const {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
+    
+    // 只统计真正活跃的客户端（排除DISCONNECTED状态）
+    size_t active_count = 0;
+    for (const auto& pair : sessions_) {
+        if (pair.second->getState() != SessionState::DISCONNECTED) {
+            active_count++;
+        }
+    }
+    
+    return active_count;
+}
+
+size_t VPNServer::getTotalSessionCount() const {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
     return sessions_.size();
 }
 
@@ -306,10 +320,8 @@ void VPNServer::cleanupThreadFunc() {
     while (!should_stop_.load()) {
         cleanupInactiveSessions();
         
-        // Cleanup every 30 seconds
-        for (int i = 0; i < 30 && !should_stop_.load(); ++i) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
+        // Cleanup every 1 second for maximum responsiveness
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
     
     std::cout << "Cleanup thread ended" << std::endl;
@@ -594,7 +606,13 @@ void VPNServer::handleKeepAlive(SessionPtr session, const common::SecureMessage*
         return;
     }
     
-    // 更新活跃时间（已在processSecureMessage中处理）
+    // 显式更新活跃时间（确保心跳包能重置超时计时器）
+    session->updateLastActivity();
+    
+    // 由于心跳包很频繁（1秒一次），只在调试模式下输出日志
+    // std::cout << "Received keepalive from client " << session->getClientId() 
+    //           << ", IP: " << session->getVirtualIP() << std::endl;
+    
     // 发送keepalive响应
     auto response = session->createSecureMessage(common::MessageType::KEEPALIVE);
     if (response) {
@@ -619,6 +637,10 @@ void VPNServer::handleDisconnect(SessionPtr session, const common::SecureMessage
     
     // 标记为断开连接
     session->setState(SessionState::DISCONNECTED);
+    
+    // 立即清理断开的会话，避免延迟
+    std::cout << "Immediately cleaning up disconnected session " << session->getClientId() << std::endl;
+    removeSession(session->getClientId());
 }
 
 bool VPNServer::sendSecureMessage(SessionPtr session, std::unique_ptr<common::SecureMessage> message) {
@@ -760,47 +782,156 @@ SessionPtr VPNServer::findOrCreateSession(const struct sockaddr_in& client_addr)
 void VPNServer::removeSession(ClientId client_id) {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
     
+    // 检查服务器是否正在停止
+    if (should_stop_.load()) {
+        std::cout << "Server is stopping, skipping session removal for client: " << client_id << std::endl;
+        return;
+    }
+    
     auto it = sessions_.find(client_id);
     if (it != sessions_.end()) {
         const std::string& virtual_ip = it->second->getVirtualIP();
+        SessionState state = it->second->getState();
         
         // Remove client route from router
         if (packet_router_) {
-            packet_router_->removeClientRoute(client_id);
+            try {
+                packet_router_->removeClientRoute(client_id);
+            } catch (const std::exception& e) {
+                std::cerr << "Error removing client route: " << e.what() << std::endl;
+            }
         }
         
         // Remove from IP mapping and release IP
         if (!virtual_ip.empty()) {
             ip_to_client_.erase(virtual_ip);
-            releaseVirtualIP(virtual_ip);
+            try {
+                releaseVirtualIP(virtual_ip);
+            } catch (const std::exception& e) {
+                std::cerr << "Error releasing IP " << virtual_ip << ": " << e.what() << std::endl;
+            }
         }
         
         sessions_.erase(it);
         
-        std::cout << "Client disconnected: ID " << client_id << std::endl;
+        std::cout << "Client session removed: ID " << client_id 
+                  << ", IP " << virtual_ip 
+                  << ", State " << static_cast<int>(state) 
+                  << ", Remaining clients: " << sessions_.size() << std::endl;
+    } else {
+        std::cout << "Warning: Attempted to remove non-existent client session: ID " << client_id << std::endl;
     }
 }
 
 void VPNServer::cleanupInactiveSessions() {
+    // 检查服务器是否正在停止
+    if (should_stop_.load()) {
+        return;
+    }
+    
     std::vector<ClientId> expired_clients;
+    std::vector<ClientId> disconnected_clients;
+    std::vector<ClientId> connecting_timeout_clients;
     
     {
         std::lock_guard<std::mutex> lock(sessions_mutex_);
         
         for (const auto& pair : sessions_) {
-            if (pair.second->isExpired(config_->getClientTimeoutSeconds())) {
-                expired_clients.push_back(pair.first);
+            try {
+                SessionState state = pair.second->getState();
+                
+                // 清理超时的会话（基于心跳包检测）
+                // 对于已连接的客户端，使用更短的超时时间（心跳包间隔的5倍）
+                int timeout_seconds = config_->getClientTimeoutSeconds();
+                if (state == SessionState::ACTIVE) {
+                    // 活跃客户端的心跳包间隔是1秒，使用5秒超时
+                    timeout_seconds = 5;
+                } else if (state == SessionState::AUTHENTICATED) {
+                    // 已认证但未完全激活的客户端，使用较短超时
+                    timeout_seconds = 10;
+                }
+                
+                if (pair.second->isExpired(timeout_seconds)) {
+                    expired_clients.push_back(pair.first);
+                    std::cout << "Session " << pair.first << " expired (state: " << static_cast<int>(state) 
+                              << ", timeout: " << timeout_seconds << "s)" << std::endl;
+                }
+                // 立即清理已断开连接的会话
+                else if (state == SessionState::DISCONNECTED) {
+                    disconnected_clients.push_back(pair.first);
+                    std::cout << "Session " << pair.first << " marked as disconnected, cleaning up" << std::endl;
+                }
+                // 清理长时间处于连接状态的会话（超过10秒）
+                else if (state == SessionState::CONNECTING && 
+                         pair.second->isExpired(10)) {
+                    connecting_timeout_clients.push_back(pair.first);
+                    std::cout << "Session " << pair.first << " stuck in connecting state, cleaning up" << std::endl;
+                }
+                // 清理长时间处于握手状态的会话（超过15秒）
+                else if (state == SessionState::HANDSHAKING && 
+                         pair.second->isExpired(15)) {
+                    connecting_timeout_clients.push_back(pair.first);
+                    std::cout << "Session " << pair.first << " stuck in handshaking state, cleaning up" << std::endl;
+                }
+                // 清理长时间处于认证状态的会话（超过15秒）
+                else if (state == SessionState::AUTHENTICATING && 
+                         pair.second->isExpired(15)) {
+                    connecting_timeout_clients.push_back(pair.first);
+                    std::cout << "Session " << pair.first << " stuck in authenticating state, cleaning up" << std::endl;
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Error checking session " << pair.first << ": " << e.what() << std::endl;
             }
         }
     }
     
     // Clean up expired sessions
     for (ClientId client_id : expired_clients) {
-        removeSession(client_id);
+        try {
+            removeSession(client_id);
+        } catch (const std::exception& e) {
+            std::cerr << "Error removing expired session " << client_id << ": " << e.what() << std::endl;
+        }
     }
     
-    if (!expired_clients.empty()) {
-        std::cout << "Cleaned up " << expired_clients.size() << " expired sessions" << std::endl;
+    // Clean up disconnected sessions
+    for (ClientId client_id : disconnected_clients) {
+        try {
+            removeSession(client_id);
+        } catch (const std::exception& e) {
+            std::cerr << "Error removing disconnected session " << client_id << ": " << e.what() << std::endl;
+        }
+    }
+    
+    // Clean up connecting timeout sessions
+    for (ClientId client_id : connecting_timeout_clients) {
+        try {
+            removeSession(client_id);
+        } catch (const std::exception& e) {
+            std::cerr << "Error removing connecting timeout session " << client_id << ": " << e.what() << std::endl;
+        }
+    }
+    
+    if (!expired_clients.empty() || !disconnected_clients.empty() || !connecting_timeout_clients.empty()) {
+        std::cout << "Session cleanup: " << expired_clients.size() << " expired, " 
+                  << disconnected_clients.size() << " disconnected, "
+                  << connecting_timeout_clients.size() << " timeout sessions" << std::endl;
+    }
+    
+    // 定期输出会话状态统计（每10次清理输出一次）
+    static int cleanup_count = 0;
+    cleanup_count++;
+    if (cleanup_count % 10 == 0) {
+        std::lock_guard<std::mutex> lock(sessions_mutex_);
+        std::cout << "Session status check: " << sessions_.size() << " total sessions" << std::endl;
+        for (const auto& pair : sessions_) {
+            SessionState state = pair.second->getState();
+            std::cout << "  Session " << pair.first << ": state=" << static_cast<int>(state) 
+                      << ", IP=" << pair.second->getVirtualIP() << std::endl;
+        }
+        
+        // 输出IP地址池状态
+        printIPPoolStatus();
     }
 }
 
@@ -920,38 +1051,28 @@ std::string VPNServer::allocateVirtualIP() {
     uint32_t host_mask = ~netmask_;
     uint32_t max_hosts = host_mask - 1; // 减去广播地址
     
-    // 寻找下一个可用的IP
-    for (uint32_t offset = next_ip_offset_; offset <= max_hosts; ++offset) {
+    // 优先查找已释放的IP地址（从头开始搜索，优先使用小的IP）
+    for (uint32_t offset = 2; offset <= max_hosts; ++offset) {
         uint32_t ip_uint = base_ip_ + offset;
         
         // 检查这个IP是否已被分配
         if (allocated_ips_.find(ip_uint) == allocated_ips_.end()) {
             // 分配这个IP
             allocated_ips_.insert(ip_uint);
-            next_ip_offset_ = offset + 1;
+            
+            // 更新next_ip_offset_为当前分配IP的下一个位置
+            // 这样下次分配时会继续从这个位置开始，但优先使用已释放的小IP
+            if (offset >= next_ip_offset_) {
+                next_ip_offset_ = offset + 1;
+            }
             
             // 转换为字符串
             struct in_addr addr;
             addr.s_addr = htonl(ip_uint);
             std::string ip_str = inet_ntoa(addr);
             
-            std::cout << "Allocated virtual IP: " << ip_str << " (offset: " << offset << ")" << std::endl;
-            return ip_str;
-        }
-    }
-    
-    // 如果没有找到可用IP，从头开始搜索（处理IP回收的情况）
-    for (uint32_t offset = 2; offset < next_ip_offset_; ++offset) {
-        uint32_t ip_uint = base_ip_ + offset;
-        
-        if (allocated_ips_.find(ip_uint) == allocated_ips_.end()) {
-            allocated_ips_.insert(ip_uint);
-            
-            struct in_addr addr;
-            addr.s_addr = htonl(ip_uint);
-            std::string ip_str = inet_ntoa(addr);
-            
-            std::cout << "Allocated virtual IP: " << ip_str << " (offset: " << offset << ", recycled)" << std::endl;
+            std::cout << "Allocated virtual IP: " << ip_str << " (offset: " << offset 
+                      << ", next_offset: " << next_ip_offset_ << ")" << std::endl;
             return ip_str;
         }
     }
@@ -970,10 +1091,37 @@ void VPNServer::releaseVirtualIP(const std::string& ip) {
     }
     
     uint32_t ip_uint = ntohl(addr.s_addr);
+    uint32_t offset = ip_uint - base_ip_;
+    
     auto it = allocated_ips_.find(ip_uint);
     if (it != allocated_ips_.end()) {
         allocated_ips_.erase(it);
-        std::cout << "Released virtual IP: " << ip << std::endl;
+        
+        // 如果释放的IP比当前next_ip_offset_小，可以考虑调整next_ip_offset_
+        // 但这可能会影响分配顺序，所以暂时保持简单
+        std::cout << "Released virtual IP: " << ip << " (offset: " << offset 
+                  << ", pool size: " << allocated_ips_.size() 
+                  << ", next_offset: " << next_ip_offset_ << ")" << std::endl;
+    } else {
+        std::cout << "Warning: Attempted to release unallocated IP: " << ip << std::endl;
+    }
+}
+
+void VPNServer::printIPPoolStatus() {
+    std::lock_guard<std::mutex> lock(ip_pool_mutex_);
+    
+    std::cout << "IP Pool Status:" << std::endl;
+    std::cout << "  Next offset: " << next_ip_offset_ << std::endl;
+    std::cout << "  Allocated IPs: " << allocated_ips_.size() << std::endl;
+    
+    if (!allocated_ips_.empty()) {
+        std::cout << "  Allocated IP list: ";
+        for (uint32_t ip_uint : allocated_ips_) {
+            struct in_addr addr;
+            addr.s_addr = htonl(ip_uint);
+            std::cout << inet_ntoa(addr) << " ";
+        }
+        std::cout << std::endl;
     }
 }
 

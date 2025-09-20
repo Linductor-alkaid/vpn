@@ -66,10 +66,16 @@ public:
     bool isRunning() const { return running_.load(); }
 
     /**
-     * @brief 获取连接的客户端数量
-     * @return 客户端数量
+     * @brief 获取活跃的客户端数量（排除DISCONNECTED状态）
+     * @return 活跃客户端数量
      */
     size_t getClientCount() const;
+
+    /**
+     * @brief 获取总会话数量（包括DISCONNECTED状态）
+     * @return 总会话数量
+     */
+    size_t getTotalSessionCount() const;
 
     /**
      * @brief 获取服务器统计信息
@@ -117,6 +123,7 @@ private:
     std::string allocateVirtualIP();
     void releaseVirtualIP(const std::string& ip);
     bool initializeIPPool();
+    void printIPPoolStatus();
     
     // 数据包路由
     void routePacketToClient(const uint8_t* data, size_t length, 
