@@ -748,7 +748,16 @@ bool VPNServer::sendSecureMessage(SessionPtr session, std::unique_ptr<common::Se
         stats_.packets_sent++;
         
         session->updateSendStats(bytes_sent);
+        
+        // 调试：记录发送的消息
+        std::cout << "Sent message to client " << session->getClientId() 
+                  << ", type: " << static_cast<int>(message->getType())
+                  << ", bytes: " << bytes_sent << std::endl;
         return true;
+    } else {
+        std::cerr << "Failed to send UDP packet to client " << session->getClientId() 
+                  << ", error: " << strerror(errno) << " (bytes_sent: " << bytes_sent << ")" << std::endl;
+        return false;
     }
     
     return false;
@@ -966,8 +975,8 @@ void VPNServer::cleanupInactiveSessions() {
                 // 对于已连接的客户端，使用合理的超时时间（心跳包间隔的10倍）
                 int timeout_seconds = config_->getClientTimeoutSeconds();
                 if (state == SessionState::ACTIVE) {
-                    // 活跃客户端的心跳包间隔是1秒，使用10秒超时（允许网络波动）
-                    timeout_seconds = 10;
+                    // 活跃客户端的心跳包间隔是1秒，使用30秒超时（允许网络波动和连接问题）
+                    timeout_seconds = 30;
                 } else if (state == SessionState::AUTHENTICATED) {
                     // 已认证但未完全激活的客户端，使用较短超时
                     timeout_seconds = 15;

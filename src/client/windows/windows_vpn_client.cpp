@@ -705,7 +705,7 @@ bool WindowsVPNClient::receiveFromServer(uint8_t* buffer, size_t buffer_size, si
     FD_SET(udp_socket_, &read_fds);
     
     struct timeval timeout;
-    timeout.tv_sec = 10;  // 增加到10秒超时
+    timeout.tv_sec = 1;  // 减少到1秒超时，避免阻塞心跳包发送
     timeout.tv_usec = 0;
     
     int result = select(0, &read_fds, nullptr, nullptr, &timeout);
