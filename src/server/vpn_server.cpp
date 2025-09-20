@@ -346,10 +346,13 @@ void VPNServer::handleClientMessage(const struct sockaddr_in& client_addr,
         return;
     }
     
-    // 调试：记录所有接收到的消息
-    std::cout << "Received message from client " << session->getClientId() 
-              << ", type: " << static_cast<int>(message->getType())
-              << ", length: " << length << " bytes" << std::endl;
+    // 只记录非数据包和非心跳包的消息，避免刷屏
+    if (message->getType() != common::MessageType::DATA_PACKET && 
+        message->getType() != common::MessageType::KEEPALIVE) {
+        std::cout << "Received message from client " << session->getClientId() 
+                  << ", type: " << static_cast<int>(message->getType())
+                  << ", length: " << length << " bytes" << std::endl;
+    }
     
     // 根据消息类型处理（只记录非数据包消息）
     if (message->getType() != common::MessageType::DATA_PACKET) {
@@ -638,11 +641,13 @@ void VPNServer::handleKeepAlive(SessionPtr session, const common::SecureMessage*
     auto it = last_keepalive_time.find(session->getClientId());
     if (it != last_keepalive_time.end()) {
         auto interval = std::chrono::duration_cast<std::chrono::seconds>(now - it->second);
-        std::cout << "Keepalive from client " << session->getClientId() 
-                  << " (interval: " << interval.count() << "s, state: " << static_cast<int>(session->getState()) << ")" << std::endl;
+        // 只在间隔异常时记录日志
+        if (interval.count() > 5) {
+            std::cout << "Keepalive from client " << session->getClientId() 
+                      << " (long interval: " << interval.count() << "s)" << std::endl;
+        }
     } else {
-        std::cout << "First keepalive from client " << session->getClientId() 
-                  << " (state: " << static_cast<int>(session->getState()) << ")" << std::endl;
+        std::cout << "First keepalive from client " << session->getClientId() << std::endl;
     }
     last_keepalive_time[session->getClientId()] = now;
     
@@ -705,8 +710,8 @@ bool VPNServer::sendSecureMessage(SessionPtr session, std::unique_ptr<common::Se
                           message->getType() != common::MessageType::HANDSHAKE_RESPONSE &&
                           session->isHandshakeComplete());
     
-    // 只在加密失败时输出详细调试信息
-    if (should_encrypt) {
+    // 只在非心跳包加密时输出调试信息
+    if (should_encrypt && message->getType() != common::MessageType::KEEPALIVE) {
         std::cout << "Encrypting message type " << static_cast<int>(message->getType()) 
                   << " for client " << session->getClientId() << std::endl;
     }
@@ -749,10 +754,12 @@ bool VPNServer::sendSecureMessage(SessionPtr session, std::unique_ptr<common::Se
         
         session->updateSendStats(bytes_sent);
         
-        // 调试：记录发送的消息
-        std::cout << "Sent message to client " << session->getClientId() 
-                  << ", type: " << static_cast<int>(message->getType())
-                  << ", bytes: " << bytes_sent << std::endl;
+        // 只记录非心跳包的发送消息
+        if (message->getType() != common::MessageType::KEEPALIVE) {
+            std::cout << "Sent message to client " << session->getClientId() 
+                      << ", type: " << static_cast<int>(message->getType())
+                      << ", bytes: " << bytes_sent << std::endl;
+        }
         return true;
     } else {
         std::cerr << "Failed to send UDP packet to client " << session->getClientId() 

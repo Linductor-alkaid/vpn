@@ -710,8 +710,7 @@ bool WindowsVPNClient::receiveFromServer(uint8_t* buffer, size_t buffer_size, si
     
     int result = select(0, &read_fds, nullptr, nullptr, &timeout);
     if (result == 0) {
-        // 超时
-        logMessage("Receive timeout after " + std::to_string(timeout.tv_sec) + " seconds");
+        // 超时（正常情况，不记录日志避免刷屏）
         return false;
     } else if (result == SOCKET_ERROR) {
         setLastError("Select error: " + std::to_string(WSAGetLastError()));
