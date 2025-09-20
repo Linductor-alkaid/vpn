@@ -346,10 +346,12 @@ void VPNServer::handleClientMessage(const struct sockaddr_in& client_addr,
         return;
     }
     
-    // 根据消息类型处理
-    std::cout << "Processing message type: " << static_cast<int>(message->getType()) 
-              << " from client " << session->getClientId() 
-              << " (state: " << static_cast<int>(session->getState()) << ")" << std::endl;
+    // 根据消息类型处理（只记录非数据包消息）
+    if (message->getType() != common::MessageType::DATA_PACKET) {
+        std::cout << "Processing message type: " << static_cast<int>(message->getType()) 
+                  << " from client " << session->getClientId() 
+                  << " (state: " << static_cast<int>(session->getState()) << ")" << std::endl;
+    }
     
     switch (message->getType()) {
         case common::MessageType::HANDSHAKE_INIT:
@@ -624,20 +626,12 @@ void VPNServer::handleKeepAlive(SessionPtr session, const common::SecureMessage*
     // 显式更新活跃时间（确保心跳包能重置超时计时器）
     session->updateLastActivity();
     
-    // 启用心跳包日志以便调试
-    std::cout << "Received keepalive from client " << session->getClientId() 
-              << ", IP: " << session->getVirtualIP() 
-              << ", State: " << static_cast<int>(session->getState()) << std::endl;
-    
-    // 发送keepalive响应
-    std::cout << "Creating keepalive response for client " << session->getClientId() 
-              << ", handshake_complete: " << (session->isHandshakeComplete() ? "yes" : "no") << std::endl;
+    // 简化心跳包日志
+    // std::cout << "Keepalive from client " << session->getClientId() << std::endl;
     
     auto response = session->createSecureMessage(common::MessageType::KEEPALIVE);
     if (response) {
-        if (sendSecureMessage(session, std::move(response))) {
-            std::cout << "Keepalive response sent successfully to client " << session->getClientId() << std::endl;
-        } else {
+        if (!sendSecureMessage(session, std::move(response))) {
             std::cout << "Failed to send keepalive response to client " << session->getClientId() << std::endl;
         }
     } else {
@@ -680,16 +674,33 @@ bool VPNServer::sendSecureMessage(SessionPtr session, std::unique_ptr<common::Se
                           message->getType() != common::MessageType::HANDSHAKE_RESPONSE &&
                           session->isHandshakeComplete());
     
-    std::cout << "sendSecureMessage: Type=" << static_cast<int>(message->getType()) 
-              << ", HandshakeComplete=" << (session->isHandshakeComplete() ? "yes" : "no")
-              << ", ShouldEncrypt=" << (should_encrypt ? "yes" : "no")
-              << ", ClientState=" << static_cast<int>(session->getState()) << std::endl;
+    // 只在加密失败时输出详细调试信息
+    if (should_encrypt) {
+        std::cout << "Encrypting message type " << static_cast<int>(message->getType()) 
+                  << " for client " << session->getClientId() << std::endl;
+    }
     
     if (should_encrypt) {
         if (!session->encryptMessage(*message)) {
-            std::cerr << "Failed to encrypt message for client " << session->getClientId() 
-                      << ", message type: " << static_cast<int>(message->getType()) << std::endl;
-            return false;
+            std::cerr << "ENCRYPTION FAILED for client " << session->getClientId() 
+                      << ", message type: " << static_cast<int>(message->getType()) 
+                      << ", handshake_complete: " << (session->isHandshakeComplete() ? "yes" : "no")
+                      << ", session_state: " << static_cast<int>(session->getState()) << std::endl;
+            
+            // 尝试重新初始化安全协议上下文
+            if (!session->initializeSecureProtocol()) {
+                std::cerr << "Failed to reinitialize secure protocol for client " << session->getClientId() << std::endl;
+                return false;
+            } else {
+                std::cout << "Reinitialized secure protocol for client " << session->getClientId() << std::endl;
+                // 重新尝试加密
+                if (!session->encryptMessage(*message)) {
+                    std::cerr << "Encryption still failed after reinitializing for client " << session->getClientId() << std::endl;
+                    return false;
+                } else {
+                    std::cout << "Encryption succeeded after reinitializing for client " << session->getClientId() << std::endl;
+                }
+            }
         }
     }
     
@@ -801,9 +812,11 @@ SessionPtr VPNServer::findOrCreateSession(const struct sockaddr_in& client_addr)
                 pair.second->setEndpoint(client_addr);
                 pair.second->updateLastActivity();
                 
-                std::cout << "Updating endpoint for existing session, client IP: " << inet_ntoa(client_addr.sin_addr) 
-                          << " (ID: " << pair.first << ", new port: " << ntohs(client_addr.sin_port) 
-                          << ", state: " << static_cast<int>(current_state) << ")" << std::endl;
+                // 减少日志输出，只在状态变化时记录
+                if (existing_addr.sin_port != client_addr.sin_port) {
+                    std::cout << "Updated endpoint for session " << pair.first 
+                              << ", new port: " << ntohs(client_addr.sin_port) << std::endl;
+                }
                 return pair.second;
             }
             
