@@ -17,21 +17,35 @@ WindowsVPNClient::WindowsVPNClient()
 }
 
 WindowsVPNClient::~WindowsVPNClient() {
-    // 安全析构：强制停止所有活动
-    should_stop_.store(true);
-    
-    // 关闭所有资源
-    closeSocket();
-    if (tap_interface_) {
-        try {
-            tap_interface_->closeAdapter();
-        } catch (...) {
-            // 忽略析构时的错误
+    try {
+        // 安全析构：强制停止所有活动
+        should_stop_.store(true);
+        
+        // 通知所有等待的线程
+        outbound_queue_cv_.notify_all();
+        
+        // 关闭所有资源
+        closeSocket();
+        if (tap_interface_) {
+            try {
+                tap_interface_->closeAdapter();
+            } catch (...) {
+                // 忽略析构时的错误
+            }
         }
+        
+        // 强制设置状态为断开，确保所有线程能正确退出
+        connection_state_.store(ConnectionState::DISCONNECTED);
+        
+        // 安全地等待所有线程结束
+        waitForThreadsToFinish();
+        
+        // 清理安全上下文
+        secure_context_.reset();
+        
+    } catch (...) {
+        // 析构函数不能抛出异常，忽略所有异常
     }
-    
-    // 安全地等待所有线程结束
-    waitForThreadsToFinish();
 }
 
 bool WindowsVPNClient::connect(const common::VPNClientInterface::ConnectionConfig& config) {
@@ -65,6 +79,14 @@ bool WindowsVPNClient::connect(const ConnectionConfig& config) {
         
         // 调用标准的disconnect方法，确保完全清理
         disconnect();
+        
+        // 确保所有线程对象都已清理
+        if (connection_thread_.joinable()) connection_thread_.detach();
+        if (tap_reader_thread_.joinable()) tap_reader_thread_.detach();
+        if (network_reader_thread_.joinable()) network_reader_thread_.detach();
+        if (network_writer_thread_.joinable()) network_writer_thread_.detach();
+        if (keepalive_thread_.joinable()) keepalive_thread_.detach();
+        if (reconnect_thread_.joinable()) reconnect_thread_.detach();
         
         // 额外等待确保所有资源都已清理
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -1166,34 +1188,40 @@ std::string WindowsVPNClient::getServerIP() const {
 
 void WindowsVPNClient::waitForThreadsToFinish() {
     // 安全地等待所有线程结束
-    auto wait_for_thread = [this](std::thread& t, const std::string& name, int timeout_ms = 2000) {
+    auto wait_for_thread = [this](std::thread& t, const std::string& name, int timeout_ms = 1000) {
         if (t.joinable()) {
             try {
-                logMessage("Waiting for " + name + " thread to finish...");
+                // 在析构时减少日志输出
+                bool is_destructor = (connection_state_.load() == ConnectionState::DISCONNECTED);
+                if (!is_destructor) {
+                    logMessage("Waiting for " + name + " thread to finish...");
+                }
                 
-                // 使用future来实现带超时的join
-                auto future = std::async(std::launch::async, [&t]() {
-                    if (t.joinable()) {
-                        t.join();
-                    }
-                });
+                // 使用更简单的等待机制，避免future可能的问题
+                auto start_time = std::chrono::steady_clock::now();
+                while (t.joinable() && 
+                       std::chrono::steady_clock::now() - start_time < std::chrono::milliseconds(timeout_ms)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
                 
-                // 等待线程结束，最多等待timeout_ms毫秒
-                if (future.wait_for(std::chrono::milliseconds(timeout_ms)) == std::future_status::timeout) {
-                    logMessage("Warning: " + name + " thread did not finish in time, detaching...");
-                    if (t.joinable()) {
-                        t.detach();
+                if (t.joinable()) {
+                    // 超时后直接detach，避免阻塞
+                    if (!is_destructor) {
+                        logMessage("Warning: " + name + " thread timeout, detaching...");
                     }
-                } else {
+                    t.detach();
+                } else if (!is_destructor) {
                     logMessage(name + " thread finished successfully");
                 }
             } catch (const std::exception& e) {
-                logMessage("Exception waiting for " + name + " thread: " + e.what());
+                if (connection_state_.load() != ConnectionState::DISCONNECTED) {
+                    logMessage("Exception waiting for " + name + " thread: " + e.what());
+                }
                 if (t.joinable()) {
                     t.detach();
                 }
             } catch (...) {
-                logMessage("Unknown exception waiting for " + name + " thread");
+                // 静默处理析构时的异常
                 if (t.joinable()) {
                     t.detach();
                 }
@@ -1201,15 +1229,19 @@ void WindowsVPNClient::waitForThreadsToFinish() {
         }
     };
     
-    // 等待各个线程结束，使用较短的超时时间避免阻塞重连
-    wait_for_thread(tap_reader_thread_, "tap_reader", 500);
-    wait_for_thread(network_reader_thread_, "network_reader", 500);
-    wait_for_thread(network_writer_thread_, "network_writer", 500);
-    wait_for_thread(keepalive_thread_, "keepalive", 500);
-    wait_for_thread(reconnect_thread_, "reconnect", 500);
-    wait_for_thread(connection_thread_, "connection", 1000); // 连接线程稍长一些
+    // 等待各个线程结束，析构时使用更短的超时时间
+    int timeout = (connection_state_.load() == ConnectionState::DISCONNECTED) ? 200 : 500;
     
-    logMessage("All threads cleanup completed");
+    wait_for_thread(tap_reader_thread_, "tap_reader", timeout);
+    wait_for_thread(network_reader_thread_, "network_reader", timeout);
+    wait_for_thread(network_writer_thread_, "network_writer", timeout);
+    wait_for_thread(keepalive_thread_, "keepalive", timeout);
+    wait_for_thread(reconnect_thread_, "reconnect", timeout);
+    wait_for_thread(connection_thread_, "connection", timeout * 2);
+    
+    if (connection_state_.load() != ConnectionState::DISCONNECTED) {
+        logMessage("All threads cleanup completed");
+    }
 }
 
 } // namespace client
