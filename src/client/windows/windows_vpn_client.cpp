@@ -63,21 +63,13 @@ bool WindowsVPNClient::connect(const ConnectionConfig& config) {
     if (current_state != ConnectionState::DISCONNECTED) {
         logMessage("Force disconnecting existing connection before reconnecting...");
         
-        // 强制断开 - 不等待，直接清理
-        should_stop_.store(true);
+        // 调用标准的disconnect方法，确保完全清理
+        disconnect();
         
-        // 强制关闭网络资源
-        closeSocket();
-        if (tap_interface_) {
-            tap_interface_->closeAdapter();
-        }
+        // 额外等待确保所有资源都已清理
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
         
-        // 安全地等待所有线程结束
-        waitForThreadsToFinish();
-        
-        // 强制重置状态
-        setState(ConnectionState::DISCONNECTED);
-        logMessage("Previous connection forcibly cleaned up");
+        logMessage("Previous connection completely cleaned up");
     }
     
     // 重置所有状态
@@ -108,8 +100,27 @@ bool WindowsVPNClient::connect(const ConnectionConfig& config) {
 }
 
 void WindowsVPNClient::disconnect() {
-    if (connection_state_.load() == ConnectionState::DISCONNECTED) {
+    auto current_state = connection_state_.load();
+    if (current_state == ConnectionState::DISCONNECTED) {
         return; // 已经断开连接
+    }
+    
+    // 避免重复断开
+    if (current_state == ConnectionState::DISCONNECTING) {
+        logMessage("Disconnect already in progress, waiting...");
+        // 等待断开完成，但设置超时避免死锁
+        auto start_time = std::chrono::steady_clock::now();
+        const auto max_wait = std::chrono::seconds(5);
+        
+        while (connection_state_.load() == ConnectionState::DISCONNECTING) {
+            if (std::chrono::steady_clock::now() - start_time > max_wait) {
+                logMessage("Disconnect wait timeout, forcing state change");
+                setState(ConnectionState::DISCONNECTED);
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        return;
     }
     
     should_stop_.store(true);
@@ -141,6 +152,9 @@ void WindowsVPNClient::disconnect() {
             outbound_queue_.pop();
         }
     }
+    
+    // 重置安全上下文
+    secure_context_.reset();
     
     setState(ConnectionState::DISCONNECTED);
     logMessage("VPN connection disconnected safely");
@@ -234,7 +248,12 @@ void WindowsVPNClient::connectionThreadFunc() {
             return;
         }
         
-        // 7. 启动数据处理线程
+        // 7. 设置连接状态为CONNECTED
+        setState(ConnectionState::CONNECTED);
+        stats_.connection_start_time = std::chrono::steady_clock::now();
+        logMessage("VPN connection established successfully");
+        
+        // 8. 启动数据处理线程（在状态设置后启动）
         try {
             tap_reader_thread_ = std::thread(&WindowsVPNClient::tapReaderThreadFunc, this);
             keepalive_thread_ = std::thread(&WindowsVPNClient::keepaliveThreadFunc, this);
@@ -244,9 +263,7 @@ void WindowsVPNClient::connectionThreadFunc() {
             return;
         }
         
-        setState(ConnectionState::CONNECTED);
-        stats_.connection_start_time = std::chrono::steady_clock::now();
-        logMessage("VPN connection established successfully");
+        logMessage("All processing threads started successfully");
         
         // 等待断开信号
         while (!should_stop_.load() && connection_state_.load() == ConnectionState::CONNECTED) {
@@ -425,6 +442,9 @@ void WindowsVPNClient::networkReaderThreadFunc() {
     logMessage("Network reader thread started");
     
     uint8_t buffer[NETWORK_BUFFER_SIZE];
+    int consecutive_timeouts = 0;
+    const int max_timeouts = 12; // 连续12次超时（60秒）后认为服务器断开
+    auto last_successful_receive = std::chrono::steady_clock::now();
     
     while (!should_stop_.load()) {
         // 只有在连接过程中才处理网络数据包
@@ -434,12 +454,54 @@ void WindowsVPNClient::networkReaderThreadFunc() {
             if (receiveFromServer(buffer, sizeof(buffer), &received_length)) {
                 if (received_length > 0) {
                     processNetworkPacket(buffer, received_length);
+                    consecutive_timeouts = 0; // 重置超时计数
+                    last_successful_receive = std::chrono::steady_clock::now();
                 }
+                // 即使收到0字节，也重置超时计数（说明服务器还在响应）
+                consecutive_timeouts = 0;
             } else {
                 // 如果套接字已关闭，退出循环
                 if (udp_socket_ == INVALID_SOCKET) {
                     break;
                 }
+                
+                // 检查是否是真正的网络错误
+                int error = WSAGetLastError();
+                if (error == WSAETIMEDOUT || error == 0) {
+                    // 接收超时，检查是否连续超时过多
+                    consecutive_timeouts++;
+                    
+                    // 检查总的无响应时间
+                    auto now = std::chrono::steady_clock::now();
+                    auto no_response_duration = std::chrono::duration_cast<std::chrono::seconds>(
+                        now - last_successful_receive);
+                    
+                    // 如果连续超时过多或无响应时间过长，且处于连接状态
+                    if ((consecutive_timeouts >= max_timeouts || no_response_duration.count() >= 60) &&
+                        connection_state_.load() == ConnectionState::CONNECTED) {
+                        logMessage("Server appears to be disconnected (no response for " + 
+                                 std::to_string(no_response_duration.count()) + " seconds, timeouts: " +
+                                 std::to_string(consecutive_timeouts) + ")");
+                        setState(ConnectionState::ERROR_STATE);
+                        setLastError("Server connection lost");
+                        break;
+                    }
+                    
+                    // 定期报告无响应状态（每10秒一次）
+                    if (no_response_duration.count() > 0 && no_response_duration.count() % 10 == 0 &&
+                        consecutive_timeouts % 2 == 0) { // 避免重复日志
+                        logMessage("No server response for " + std::to_string(no_response_duration.count()) + " seconds");
+                    }
+                } else {
+                    // 真正的网络错误，立即认为连接断开
+                    if (connection_state_.load() == ConnectionState::CONNECTED) {
+                        logMessage("Network error detected: " + std::to_string(error));
+                        setState(ConnectionState::ERROR_STATE);
+                        setLastError("Network error: " + std::to_string(error));
+                        break;
+                    }
+                }
+                
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
         } else {
@@ -705,7 +767,7 @@ bool WindowsVPNClient::receiveFromServer(uint8_t* buffer, size_t buffer_size, si
     FD_SET(udp_socket_, &read_fds);
     
     struct timeval timeout;
-    timeout.tv_sec = 1;  // 减少到1秒超时，避免阻塞心跳包发送
+    timeout.tv_sec = 5;  // 设置为5秒超时，平衡响应性和稳定性
     timeout.tv_usec = 0;
     
     int result = select(0, &read_fds, nullptr, nullptr, &timeout);
@@ -798,13 +860,36 @@ bool WindowsVPNClient::processSecureMessage(const uint8_t* buffer, size_t buffer
 }
 
 void WindowsVPNClient::keepaliveThreadFunc() {
-    logMessage("Keepalive thread started");
+    logMessage("Keepalive thread started, waiting for connection to stabilize...");
     
-    while (!should_stop_.load() && connection_state_.load() == ConnectionState::CONNECTED) {
-        std::this_thread::sleep_for(std::chrono::seconds(config_.keepalive_interval));
+    // 等待连接完全建立
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    
+    logMessage("Starting keepalive loop, state: " + std::to_string(static_cast<int>(connection_state_.load())));
+    
+    while (!should_stop_.load()) {
+        auto current_state = connection_state_.load();
         
-        if (!should_stop_.load() && connection_state_.load() == ConnectionState::CONNECTED) {
-            sendKeepalive();
+        // 只在CONNECTED状态下发送心跳
+        if (current_state == ConnectionState::CONNECTED) {
+            logMessage("Sending keepalive...");
+            
+            if (sendKeepalive()) {
+                // 心跳发送成功，等待下次发送
+                std::this_thread::sleep_for(std::chrono::seconds(config_.keepalive_interval));
+            } else {
+                // 心跳发送失败，短暂等待后重试
+                logMessage("Keepalive send failed, retrying in 1 second");
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+        } else if (current_state == ConnectionState::DISCONNECTED || 
+                   current_state == ConnectionState::ERROR_STATE) {
+            // 连接已断开，退出心跳线程
+            logMessage("Connection disconnected, keepalive thread exiting");
+            break;
+        } else {
+            // 其他状态，等待状态变化
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
     }
     
@@ -813,12 +898,14 @@ void WindowsVPNClient::keepaliveThreadFunc() {
 
 bool WindowsVPNClient::sendKeepalive() {
     if (!secure_context_ || !secure_context_->isHandshakeComplete()) {
+        logMessage("Cannot send keepalive: secure context not ready");
         return false;
     }
     
     // 创建保活消息
     auto keepalive_message = secure_context_->createMessage(common::MessageType::KEEPALIVE);
     if (!keepalive_message) {
+        logMessage("Failed to create keepalive message");
         return false;
     }
     
@@ -827,7 +914,13 @@ bool WindowsVPNClient::sendKeepalive() {
                                  keepalive_data.length());
     
     // 发送安全消息
-    return sendSecureMessage(std::move(keepalive_message));
+    bool result = sendSecureMessage(std::move(keepalive_message));
+    if (result) {
+        logMessage("Keepalive sent successfully");
+    } else {
+        logMessage("Failed to send keepalive");
+    }
+    return result;
 }
 
 void WindowsVPNClient::setState(ConnectionState new_state) {
@@ -1108,13 +1201,13 @@ void WindowsVPNClient::waitForThreadsToFinish() {
         }
     };
     
-    // 等待各个线程结束，给每个线程足够的时间
-    wait_for_thread(tap_reader_thread_, "tap_reader", 1000);
-    wait_for_thread(network_reader_thread_, "network_reader", 1000);
-    wait_for_thread(network_writer_thread_, "network_writer", 1000);
-    wait_for_thread(keepalive_thread_, "keepalive", 1000);
-    wait_for_thread(reconnect_thread_, "reconnect", 1000);
-    wait_for_thread(connection_thread_, "connection", 2000); // 连接线程可能需要更多时间
+    // 等待各个线程结束，使用较短的超时时间避免阻塞重连
+    wait_for_thread(tap_reader_thread_, "tap_reader", 500);
+    wait_for_thread(network_reader_thread_, "network_reader", 500);
+    wait_for_thread(network_writer_thread_, "network_writer", 500);
+    wait_for_thread(keepalive_thread_, "keepalive", 500);
+    wait_for_thread(reconnect_thread_, "reconnect", 500);
+    wait_for_thread(connection_thread_, "connection", 1000); // 连接线程稍长一些
     
     logMessage("All threads cleanup completed");
 }
