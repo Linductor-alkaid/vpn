@@ -158,6 +158,11 @@ public:
      * @return 服务器IP地址
      */
     std::string getServerIP() const override;
+    
+    /**
+     * @brief 安全地等待所有线程结束
+     */
+    void waitForThreadsToFinish();
 
 private:
     // 连接管理

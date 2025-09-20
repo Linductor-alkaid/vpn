@@ -29,25 +29,8 @@ WindowsVPNClient::~WindowsVPNClient() {
         }
     }
     
-    // 分离所有线程
-    if (connection_thread_.joinable()) {
-        connection_thread_.detach();
-    }
-    if (tap_reader_thread_.joinable()) {
-        tap_reader_thread_.detach();
-    }
-    if (network_reader_thread_.joinable()) {
-        network_reader_thread_.detach();
-    }
-    if (network_writer_thread_.joinable()) {
-        network_writer_thread_.detach();
-    }
-    if (keepalive_thread_.joinable()) {
-        keepalive_thread_.detach();
-    }
-    if (reconnect_thread_.joinable()) {
-        reconnect_thread_.detach();
-    }
+    // 安全地等待所有线程结束
+    waitForThreadsToFinish();
 }
 
 bool WindowsVPNClient::connect(const common::VPNClientInterface::ConnectionConfig& config) {
@@ -88,28 +71,8 @@ bool WindowsVPNClient::connect(const ConnectionConfig& config) {
             tap_interface_->closeAdapter();
         }
         
-        // 等待所有线程完全结束
-        if (connection_thread_.joinable()) {
-            connection_thread_.detach(); // 强制分离，避免阻塞
-        }
-        if (tap_reader_thread_.joinable()) {
-            tap_reader_thread_.detach();
-        }
-        if (network_reader_thread_.joinable()) {
-            network_reader_thread_.detach();
-        }
-        if (network_writer_thread_.joinable()) {
-            network_writer_thread_.detach();
-        }
-        if (keepalive_thread_.joinable()) {
-            keepalive_thread_.detach();
-        }
-        if (reconnect_thread_.joinable()) {
-            reconnect_thread_.detach();
-        }
-        
-        // 等待一段时间确保资源清理完成
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        // 安全地等待所有线程结束
+        waitForThreadsToFinish();
         
         // 强制重置状态
         setState(ConnectionState::DISCONNECTED);
@@ -131,7 +94,13 @@ bool WindowsVPNClient::connect(const ConnectionConfig& config) {
     setState(ConnectionState::CONNECTING);
     
     // 启动新的连接线程
-    connection_thread_ = std::thread(&WindowsVPNClient::connectionThreadFunc, this);
+    try {
+        connection_thread_ = std::thread(&WindowsVPNClient::connectionThreadFunc, this);
+    } catch (const std::exception& e) {
+        setLastError("Failed to create connection thread: " + std::string(e.what()));
+        setState(ConnectionState::ERROR_STATE);
+        return false;
+    }
     
     logMessage("New connection attempt started");
     return true;
@@ -161,25 +130,8 @@ void WindowsVPNClient::disconnect() {
     // 通知所有等待的线程
     outbound_queue_cv_.notify_all();
     
-    // 快速分离所有线程，避免等待
-    if (connection_thread_.joinable()) {
-        connection_thread_.detach();
-    }
-    if (tap_reader_thread_.joinable()) {
-        tap_reader_thread_.detach();
-    }
-    if (network_reader_thread_.joinable()) {
-        network_reader_thread_.detach();
-    }
-    if (network_writer_thread_.joinable()) {
-        network_writer_thread_.detach();
-    }
-    if (keepalive_thread_.joinable()) {
-        keepalive_thread_.detach();
-    }
-    if (reconnect_thread_.joinable()) {
-        reconnect_thread_.detach();
-    }
+    // 安全地等待所有线程结束
+    waitForThreadsToFinish();
     
     // 清理队列
     {
@@ -253,8 +205,14 @@ void WindowsVPNClient::connectionThreadFunc() {
         }
         
         // 3. 启动网络读取线程（需要在握手前启动以接收响应）
-        network_reader_thread_ = std::thread(&WindowsVPNClient::networkReaderThreadFunc, this);
-        network_writer_thread_ = std::thread(&WindowsVPNClient::networkWriterThreadFunc, this);
+        try {
+            network_reader_thread_ = std::thread(&WindowsVPNClient::networkReaderThreadFunc, this);
+            network_writer_thread_ = std::thread(&WindowsVPNClient::networkWriterThreadFunc, this);
+        } catch (const std::exception& e) {
+            setLastError("Failed to create network threads: " + std::string(e.what()));
+            setState(ConnectionState::ERROR_STATE);
+            return;
+        }
         
         // 4. 执行握手协议
         setState(ConnectionState::AUTHENTICATING);
@@ -276,8 +234,14 @@ void WindowsVPNClient::connectionThreadFunc() {
         }
         
         // 7. 启动数据处理线程
-        tap_reader_thread_ = std::thread(&WindowsVPNClient::tapReaderThreadFunc, this);
-        keepalive_thread_ = std::thread(&WindowsVPNClient::keepaliveThreadFunc, this);
+        try {
+            tap_reader_thread_ = std::thread(&WindowsVPNClient::tapReaderThreadFunc, this);
+            keepalive_thread_ = std::thread(&WindowsVPNClient::keepaliveThreadFunc, this);
+        } catch (const std::exception& e) {
+            setLastError("Failed to create processing threads: " + std::string(e.what()));
+            setState(ConnectionState::ERROR_STATE);
+            return;
+        }
         
         setState(ConnectionState::CONNECTED);
         stats_.connection_start_time = std::chrono::steady_clock::now();
@@ -1092,6 +1056,35 @@ std::string WindowsVPNClient::getVirtualIP() const {
 
 std::string WindowsVPNClient::getServerIP() const {
     return config_.server_address;
+}
+
+void WindowsVPNClient::waitForThreadsToFinish() {
+    // 安全地等待所有线程结束
+    auto wait_for_thread = [](std::thread& t, const std::string& name) {
+        if (t.joinable()) {
+            try {
+                // 给线程一些时间自然结束
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                
+                // 如果线程还在运行，强制分离
+                if (t.joinable()) {
+                    t.detach();
+                }
+            } catch (...) {
+                // 忽略线程操作异常
+            }
+        }
+    };
+    
+    wait_for_thread(connection_thread_, "connection");
+    wait_for_thread(tap_reader_thread_, "tap_reader");
+    wait_for_thread(network_reader_thread_, "network_reader");
+    wait_for_thread(network_writer_thread_, "network_writer");
+    wait_for_thread(keepalive_thread_, "keepalive");
+    wait_for_thread(reconnect_thread_, "reconnect");
+    
+    // 额外等待确保资源清理完成
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 }
 
 } // namespace client
