@@ -50,6 +50,24 @@ WindowsVPNClient::~WindowsVPNClient() {
     }
 }
 
+bool WindowsVPNClient::connect(const common::VPNClientInterface::ConnectionConfig& config) {
+    // 转换为Windows特定配置
+    ConnectionConfig windows_config;
+    windows_config.server_address = config.server_address;
+    windows_config.server_port = config.server_port;
+    windows_config.username = config.username;
+    windows_config.password = config.password;
+    windows_config.tap_adapter_name = config.interface_name;
+    windows_config.virtual_ip = config.virtual_ip;
+    windows_config.virtual_netmask = config.virtual_netmask;
+    windows_config.keepalive_interval = config.keepalive_interval;
+    windows_config.connection_timeout = config.connection_timeout;
+    windows_config.auto_reconnect = config.auto_reconnect;
+    windows_config.max_reconnect_attempts = config.max_reconnect_attempts;
+    
+    return connect(windows_config);
+}
+
 bool WindowsVPNClient::connect(const ConnectionConfig& config) {
     // 使用互斥锁保护整个连接过程
     static std::mutex connect_mutex;
@@ -175,9 +193,36 @@ void WindowsVPNClient::disconnect() {
     logMessage("VPN connection disconnected safely");
 }
 
-WindowsVPNClient::ConnectionStats WindowsVPNClient::getConnectionStats() const {
+common::VPNClientInterface::ConnectionState WindowsVPNClient::getConnectionState() const {
+    auto windows_state = connection_state_.load();
+    switch (windows_state) {
+        case ConnectionState::DISCONNECTED:
+            return common::VPNClientInterface::ConnectionState::DISCONNECTED;
+        case ConnectionState::CONNECTING:
+        case ConnectionState::HANDSHAKING:
+            return common::VPNClientInterface::ConnectionState::CONNECTING;
+        case ConnectionState::AUTHENTICATING:
+            return common::VPNClientInterface::ConnectionState::AUTHENTICATING;
+        case ConnectionState::CONNECTED:
+            return common::VPNClientInterface::ConnectionState::CONNECTED;
+        case ConnectionState::DISCONNECTING:
+            return common::VPNClientInterface::ConnectionState::DISCONNECTING;
+        case ConnectionState::ERROR_STATE:
+            return common::VPNClientInterface::ConnectionState::ERROR_STATE;
+        default:
+            return common::VPNClientInterface::ConnectionState::DISCONNECTED;
+    }
+}
+
+common::VPNClientInterface::ConnectionStats WindowsVPNClient::getConnectionStats() const {
     std::lock_guard<std::mutex> lock(stats_mutex_);
-    return stats_;
+    common::VPNClientInterface::ConnectionStats common_stats;
+    common_stats.bytes_sent = stats_.bytes_sent;
+    common_stats.bytes_received = stats_.bytes_received;
+    common_stats.packets_sent = stats_.packets_sent;
+    common_stats.packets_received = stats_.packets_received;
+    common_stats.connection_start_time = stats_.connection_start_time;
+    return common_stats;
 }
 
 std::string WindowsVPNClient::getLastError() const {
@@ -207,29 +252,31 @@ void WindowsVPNClient::connectionThreadFunc() {
             return;
         }
         
-        // 3. 执行握手协议
+        // 3. 启动网络读取线程（需要在握手前启动以接收响应）
+        network_reader_thread_ = std::thread(&WindowsVPNClient::networkReaderThreadFunc, this);
+        network_writer_thread_ = std::thread(&WindowsVPNClient::networkWriterThreadFunc, this);
+        
+        // 4. 执行握手协议
         setState(ConnectionState::AUTHENTICATING);
         if (!performHandshake()) {
             setState(ConnectionState::DISCONNECTED);
             return;
         }
         
-        // 4. 身份验证
+        // 5. 身份验证
         if (!authenticateWithServer()) {
             setState(ConnectionState::DISCONNECTED);
             return;
         }
         
-        // 5. 设置隧道
+        // 6. 设置隧道
         if (!setupTunnel()) {
             setState(ConnectionState::DISCONNECTED);
             return;
         }
         
-        // 6. 启动数据处理线程
+        // 7. 启动数据处理线程
         tap_reader_thread_ = std::thread(&WindowsVPNClient::tapReaderThreadFunc, this);
-        network_reader_thread_ = std::thread(&WindowsVPNClient::networkReaderThreadFunc, this);
-        network_writer_thread_ = std::thread(&WindowsVPNClient::networkWriterThreadFunc, this);
         keepalive_thread_ = std::thread(&WindowsVPNClient::keepaliveThreadFunc, this);
         
         setState(ConnectionState::CONNECTED);
@@ -447,14 +494,26 @@ void WindowsVPNClient::networkReaderThreadFunc() {
     
     uint8_t buffer[NETWORK_BUFFER_SIZE];
     
-    while (!should_stop_.load() && connection_state_.load() == ConnectionState::CONNECTED) {
-        size_t received_length;
-        if (receiveFromServer(buffer, sizeof(buffer), &received_length)) {
-            if (received_length > 0) {
-                processNetworkPacket(buffer, received_length);
+    while (!should_stop_.load()) {
+        // 只有在连接过程中才处理网络数据包
+        if (connection_state_.load() != ConnectionState::DISCONNECTED &&
+            connection_state_.load() != ConnectionState::ERROR_STATE) {
+            size_t received_length;
+            if (receiveFromServer(buffer, sizeof(buffer), &received_length)) {
+                if (received_length > 0) {
+                    processNetworkPacket(buffer, received_length);
+                }
+            } else {
+                // 如果套接字已关闭，退出循环
+                if (udp_socket_ == INVALID_SOCKET) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
         } else {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            // 如果已断开连接，等待一段时间后退出
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            break;
         }
     }
     
@@ -547,6 +606,21 @@ bool WindowsVPNClient::processNetworkPacket(const uint8_t* data, size_t length) 
                 
                 // 解析认证响应
                 if (response.find("\"status\":\"success\"") != std::string::npos) {
+                    // 提取虚拟IP地址
+                    size_t ip_pos = response.find("\"virtual_ip\":\"");
+                    if (ip_pos != std::string::npos) {
+                        size_t start = ip_pos + 14;
+                        size_t end = response.find("\"", start);
+                        if (end != std::string::npos) {
+                            std::string virtual_ip = response.substr(start, end - start);
+                            {
+                                std::lock_guard<std::mutex> lock(virtual_ip_mutex_);
+                                assigned_virtual_ip_ = virtual_ip;
+                            }
+                            logMessage("Assigned virtual IP: " + virtual_ip);
+                        }
+                    }
+                    
                     setState(ConnectionState::CONNECTED);
                     logMessage("Authentication successful");
                 } else {
@@ -819,8 +893,8 @@ void WindowsVPNClient::setLastError(const std::string& error) {
     logMessage("Error: " + error);
 }
 
-WindowsVPNClient::BandwidthTestResult WindowsVPNClient::performBandwidthTest(uint32_t test_duration_seconds, uint32_t test_size_mb) {
-    BandwidthTestResult result;
+common::VPNClientInterface::BandwidthTestResult WindowsVPNClient::performBandwidthTest(uint32_t test_duration_seconds, uint32_t test_size_mb) {
+    common::VPNClientInterface::BandwidthTestResult result;
     
     if (connection_state_.load() != ConnectionState::CONNECTED) {
         result.error_message = "VPN not connected";
@@ -995,6 +1069,29 @@ bool WindowsVPNClientManager::requestAdministratorPrivileges() {
     // 这里应该实现UAC提权逻辑
     // 通常需要重新启动应用程序并请求管理员权限
     return hasAdministratorPrivileges();
+}
+
+bool WindowsVPNClient::testInterface() {
+    // 检查TAP驱动是否已安装
+    if (!TapAdapterManager::isTapDriverInstalled()) {
+        return false;
+    }
+    
+    // 检查是否有管理员权限
+    if (!WindowsVPNClientManager::getInstance().hasAdministratorPrivileges()) {
+        return false;
+    }
+    
+    return true;
+}
+
+std::string WindowsVPNClient::getVirtualIP() const {
+    std::lock_guard<std::mutex> lock(virtual_ip_mutex_);
+    return assigned_virtual_ip_;
+}
+
+std::string WindowsVPNClient::getServerIP() const {
+    return config_.server_address;
 }
 
 } // namespace client

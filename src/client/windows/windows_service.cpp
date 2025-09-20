@@ -1,10 +1,13 @@
 #include "client/windows_service.h"
 #include "client/windows_vpn_client.h"
+#include "common/web_server.h"
 #include <iostream>
 #include <sstream>
 #include <fstream>
 #include <chrono>
 #include <thread>
+
+using namespace sduvpn::common;
 
 namespace sduvpn {
 namespace client {
@@ -282,7 +285,7 @@ void WindowsServiceBase::logEvent(const std::string& message, WORD type) {
 // SDUVPNWindowsService implementation
 SDUVPNWindowsService::SDUVPNWindowsService()
     : WindowsServiceBase(SERVICE_NAME, SERVICE_DISPLAY_NAME, SERVICE_DESCRIPTION),
-      vpn_client_(std::make_unique<WindowsVPNClient>()) {
+      vpn_client_(std::shared_ptr<common::VPNClientInterface>(WindowsVPNClientManager::getInstance().createClient().release())) {
     
     // 设置日志回调
     vpn_client_->setLogCallback([this](const std::string& message) {
@@ -366,15 +369,15 @@ void SDUVPNWindowsService::serviceThreadFunc() {
             // 检查VPN连接状态
             auto state = vpn_client_->getConnectionState();
             
-            if (state == WindowsVPNClient::ConnectionState::DISCONNECTED ||
-                state == WindowsVPNClient::ConnectionState::ERROR_STATE) {
+            if (state == common::VPNClientInterface::ConnectionState::DISCONNECTED ||
+                state == common::VPNClientInterface::ConnectionState::ERROR_STATE) {
                 
                 // 尝试重新连接
                 logEvent("Attempting to reconnect VPN");
                 
                 // 这里需要重新加载配置并连接
                 // 实际实现中应该从配置文件读取连接参数
-                WindowsVPNClient::ConnectionConfig config;
+                common::VPNClientInterface::ConnectionConfig config;
                 config.server_address = "127.0.0.1"; // 示例配置
                 config.server_port = 1194;
                 config.username = "user";
@@ -437,23 +440,23 @@ void SDUVPNWindowsService::monitorConnection() {
             oss << "Connection Status: ";
             
             switch (state) {
-                case WindowsVPNClient::ConnectionState::DISCONNECTED:
+                case common::VPNClientInterface::ConnectionState::DISCONNECTED:
                     oss << "DISCONNECTED";
                     break;
-                case WindowsVPNClient::ConnectionState::CONNECTING:
+                case common::VPNClientInterface::ConnectionState::CONNECTING:
                     oss << "CONNECTING";
                     break;
-                case WindowsVPNClient::ConnectionState::AUTHENTICATING:
+                case common::VPNClientInterface::ConnectionState::AUTHENTICATING:
                     oss << "AUTHENTICATING";
                     break;
-                case WindowsVPNClient::ConnectionState::CONNECTED:
+                case common::VPNClientInterface::ConnectionState::CONNECTED:
                     oss << "CONNECTED - Bytes Sent: " << stats.bytes_sent 
                         << ", Bytes Received: " << stats.bytes_received;
                     break;
-                case WindowsVPNClient::ConnectionState::DISCONNECTING:
+                case common::VPNClientInterface::ConnectionState::DISCONNECTING:
                     oss << "DISCONNECTING";
                     break;
-                case WindowsVPNClient::ConnectionState::ERROR_STATE:
+                case common::VPNClientInterface::ConnectionState::ERROR_STATE:
                     oss << "ERROR - " << vpn_client_->getLastError();
                     break;
             }

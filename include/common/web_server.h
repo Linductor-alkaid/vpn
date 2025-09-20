@@ -233,6 +233,7 @@ public:
     virtual bool testInterface() = 0;  // 测试网络接口功能
     virtual std::string getVirtualIP() const = 0;  // 获取分配的虚拟IP地址
     virtual std::string getServerIP() const = 0;   // 获取连接的服务器IP地址
+    virtual void setLogCallback(std::function<void(const std::string&)> callback) = 0;  // 设置日志回调
 };
 
 /**

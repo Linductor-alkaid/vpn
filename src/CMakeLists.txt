@@ -5,7 +5,14 @@
 # =============================================================================
 add_subdirectory(common)
 add_subdirectory(crypto)
-add_subdirectory(server)
+
+# 服务端模块 (仅在非Windows平台编译)
+if(NOT WIN32)
+    add_subdirectory(server)
+    message(STATUS "Server module enabled for non-Windows platform")
+else()
+    message(STATUS "Server module disabled on Windows platform")
+endif()
 
 # =============================================================================
 # 客户端模块

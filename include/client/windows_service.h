@@ -7,6 +7,7 @@
 #include <atomic>
 #include <thread>
 #include <mutex>
+#include "common/web_server.h"
 
 namespace sduvpn {
 namespace client {
@@ -187,7 +188,7 @@ public:
     static constexpr const char* SERVICE_DESCRIPTION = "SDUVPN Virtual Private Network Client Service";
 
 private:
-    std::unique_ptr<WindowsVPNClient> vpn_client_;
+    std::shared_ptr<common::VPNClientInterface> vpn_client_;
     std::string config_path_;
     std::atomic<bool> should_stop_{false};
     std::atomic<bool> is_paused_{false};

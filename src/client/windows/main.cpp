@@ -1,8 +1,8 @@
 #include "client/windows_service.h"
 #include "client/windows_vpn_client.h"
 #include "client/windows_tap_interface.h"
-#include "client/web_server.h"
-#include "client/config_manager.h"
+#include "common/web_server.h"
+#include "common/config_manager.h"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -10,6 +10,7 @@
 #include <windows.h>
 
 using namespace sduvpn::client;
+using namespace sduvpn::common;
 
 void printUsage() {
     std::cout << "SDUVPN Windows Client\n";
@@ -158,7 +159,7 @@ bool handleConnectCommand(const std::vector<std::string>& args) {
     while (std::chrono::steady_clock::now() - start_time < timeout) {
         auto state = client->getConnectionState();
         
-        if (state == WindowsVPNClient::ConnectionState::CONNECTED) {
+        if (state == VPNClientInterface::ConnectionState::CONNECTED) {
             std::cout << "VPN connection established successfully!\n";
             
             // 显示连接信息
@@ -170,7 +171,7 @@ bool handleConnectCommand(const std::vector<std::string>& args) {
             std::cout << "VPN disconnected.\n";
             return true;
         }
-        else if (state == WindowsVPNClient::ConnectionState::ERROR_STATE) {
+        else if (state == VPNClientInterface::ConnectionState::ERROR_STATE) {
             std::cout << "Connection failed: " << client->getLastError() << "\n";
             return false;
         }
@@ -241,7 +242,7 @@ bool handleWebUICommand() {
     
     // 创建VPN客户端实例
     auto client_unique = WindowsVPNClientManager::getInstance().createClient();
-    auto client = std::shared_ptr<WindowsVPNClient>(client_unique.release());
+    auto client = std::shared_ptr<VPNClientInterface>(client_unique.release());
     
     // 创建配置管理器
     auto configManager = std::make_shared<ConfigManager>();
@@ -250,7 +251,7 @@ bool handleWebUICommand() {
     }
     
     // 创建Web服务器
-    auto webServer = std::make_shared<SimpleWebServer>();
+    auto webServer = std::make_shared<WebServer>();
     webServer->setVPNClient(client);
     webServer->setConfigManager(configManager);
     

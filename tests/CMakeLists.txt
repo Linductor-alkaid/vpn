@@ -185,10 +185,11 @@ else()
 endif()
 
 # =============================================================================
-# 服务器组件测试
+# 服务器组件测试 (仅在非Windows平台编译)
 # =============================================================================
-# 添加服务器组件测试（需要先编译服务器源文件）
-add_executable(test_server_components test_server_components.cpp)
+if(NOT WIN32)
+    # 添加服务器组件测试（需要先编译服务器源文件）
+    add_executable(test_server_components test_server_components.cpp)
 
 # 添加服务器源文件（排除main.cpp）
 set(SERVER_TEST_SOURCES
@@ -251,7 +252,10 @@ set_target_properties(test_server_components PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/bin/tests
 )
 
-message(STATUS "Server components test will be built")
+    message(STATUS "Server components test will be built")
+else()
+    message(STATUS "Server components test disabled on Windows platform")
+endif()
 
 # =============================================================================
 # 握手测试程序（手动测试，不依赖GoogleTest）

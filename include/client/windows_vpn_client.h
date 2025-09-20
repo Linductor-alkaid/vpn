@@ -4,6 +4,7 @@
 #include "crypto/crypto.h"
 #include "crypto/key_exchange.h"
 #include "common/secure_protocol.h"
+#include "common/web_server.h"
 #include <string>
 #include <memory>
 #include <atomic>
@@ -26,7 +27,7 @@ namespace client {
 /**
  * @brief Windows VPN客户端核心类
  */
-class WindowsVPNClient {
+class WindowsVPNClient : public common::VPNClientInterface {
 public:
     enum class ConnectionState {
         DISCONNECTED,
@@ -84,36 +85,42 @@ public:
      * @param config 连接配置
      * @return 是否成功启动连接过程
      */
+    bool connect(const common::VPNClientInterface::ConnectionConfig& config) override;
+    
+    // Windows特定的连接方法
     bool connect(const ConnectionConfig& config);
 
     /**
      * @brief 断开VPN连接
      */
-    void disconnect();
+    void disconnect() override;
 
     /**
      * @brief 获取连接状态
      * @return 当前连接状态
      */
-    ConnectionState getConnectionState() const { return connection_state_.load(); }
+    common::VPNClientInterface::ConnectionState getConnectionState() const override;
+    
+    // Windows特定的状态获取
+    ConnectionState getWindowsConnectionState() const { return connection_state_.load(); }
 
     /**
      * @brief 获取连接统计信息
      * @return 统计信息
      */
-    ConnectionStats getConnectionStats() const;
+    common::VPNClientInterface::ConnectionStats getConnectionStats() const override;
 
     /**
      * @brief 获取最后一次错误信息
      * @return 错误信息
      */
-    std::string getLastError() const;
+    std::string getLastError() const override;
 
     /**
      * @brief 设置日志回调函数
      * @param callback 日志回调函数
      */
-    void setLogCallback(std::function<void(const std::string&)> callback);
+    void setLogCallback(std::function<void(const std::string&)> callback) override;
 
     /**
      * @brief 带宽测试结果
@@ -132,7 +139,25 @@ public:
      * @param test_size_mb 测试数据大小（MB）
      * @return 测试结果
      */
-    BandwidthTestResult performBandwidthTest(uint32_t test_duration_seconds = 10, uint32_t test_size_mb = 10);
+    common::VPNClientInterface::BandwidthTestResult performBandwidthTest(uint32_t test_duration_seconds = 10, uint32_t test_size_mb = 10) override;
+    
+    /**
+     * @brief 测试TAP接口功能
+     * @return 是否可用
+     */
+    bool testInterface() override;
+    
+    /**
+     * @brief 获取分配的虚拟IP地址
+     * @return 虚拟IP地址
+     */
+    std::string getVirtualIP() const override;
+    
+    /**
+     * @brief 获取连接的服务器IP地址
+     * @return 服务器IP地址
+     */
+    std::string getServerIP() const override;
 
 private:
     // 连接管理
@@ -220,6 +245,10 @@ private:
     // 日志回调
     std::function<void(const std::string&)> log_callback_;
     std::mutex log_mutex_;
+    
+    // IP地址信息
+    mutable std::mutex virtual_ip_mutex_;
+    std::string assigned_virtual_ip_;
     
     // 网络缓冲区
     static constexpr size_t NETWORK_BUFFER_SIZE = 2048;
