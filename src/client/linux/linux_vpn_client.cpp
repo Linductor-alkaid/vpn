@@ -55,42 +55,58 @@ bool LinuxVPNClient::connect(const ConnectionConfig& config) {
     
     auto current_state = connection_state_.load();
     
-    // 如果正在连接或已连接，先完全断开
+    // 如果正在连接或已连接，先优雅断开
     if (current_state != ConnectionState::DISCONNECTED) {
-        logMessage("Force disconnecting existing connection before reconnecting...");
+        logMessage("Gracefully disconnecting existing connection before reconnecting...");
         
-        // 强制断开 - 不等待，直接清理
-        should_stop_.store(true);
+        // 优雅断开
+        disconnect();
         
-        // 强制关闭网络资源
-        closeSocket();
-        if (tun_interface_) {
-            tun_interface_->closeInterface();
-        }
+        // 等待断开完成
+        auto disconnect_start = std::chrono::steady_clock::now();
+        const auto disconnect_timeout = std::chrono::seconds(5);
         
-        // 等待所有线程完全结束
-        if (connection_thread_.joinable()) {
-            connection_thread_.detach(); // 强制分离，避免阻塞
-        }
-        if (tun_reader_thread_.joinable()) {
-            tun_reader_thread_.detach();
-        }
-        if (network_reader_thread_.joinable()) {
-            network_reader_thread_.detach();
-        }
-        if (network_writer_thread_.joinable()) {
-            network_writer_thread_.detach();
-        }
-        if (keepalive_thread_.joinable()) {
-            keepalive_thread_.detach();
+        while (connection_state_.load() != ConnectionState::DISCONNECTED && 
+               std::chrono::steady_clock::now() - disconnect_start < disconnect_timeout) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         
-        // 等待一段时间确保资源清理完成
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        // 如果优雅断开失败，强制清理
+        if (connection_state_.load() != ConnectionState::DISCONNECTED) {
+            logMessage("Graceful disconnect failed, forcing cleanup...");
+            should_stop_.store(true);
+            closeSocket();
+            if (tun_interface_) {
+                tun_interface_->closeInterface();
+            }
+            
+            // 等待线程结束（最多2秒）
+            auto cleanup_start = std::chrono::steady_clock::now();
+            const auto cleanup_timeout = std::chrono::seconds(2);
+            
+            while (std::chrono::steady_clock::now() - cleanup_start < cleanup_timeout) {
+                bool all_finished = true;
+                if (connection_thread_.joinable()) all_finished = false;
+                if (tun_reader_thread_.joinable()) all_finished = false;
+                if (network_reader_thread_.joinable()) all_finished = false;
+                if (network_writer_thread_.joinable()) all_finished = false;
+                if (keepalive_thread_.joinable()) all_finished = false;
+                
+                if (all_finished) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            
+            // 强制分离剩余线程
+            if (connection_thread_.joinable()) connection_thread_.detach();
+            if (tun_reader_thread_.joinable()) tun_reader_thread_.detach();
+            if (network_reader_thread_.joinable()) network_reader_thread_.detach();
+            if (network_writer_thread_.joinable()) network_writer_thread_.detach();
+            if (keepalive_thread_.joinable()) keepalive_thread_.detach();
+            
+            setState(ConnectionState::DISCONNECTED);
+        }
         
-        // 强制重置状态
-        setState(ConnectionState::DISCONNECTED);
-        logMessage("Previous connection forcibly cleaned up");
+        logMessage("Previous connection cleaned up");
     }
     
     // 重置所有状态
@@ -115,44 +131,63 @@ bool LinuxVPNClient::connect(const ConnectionConfig& config) {
 }
 
 void LinuxVPNClient::disconnect() {
-    if (connection_state_.load() == ConnectionState::DISCONNECTED) {
+    auto current_state = connection_state_.load();
+    if (current_state == ConnectionState::DISCONNECTED) {
         return; // 已经断开连接
     }
     
+    logMessage("Initiating safe disconnect...");
+    
+    // 设置停止标志
     should_stop_.store(true);
     setState(ConnectionState::DISCONNECTING);
     
-    logMessage("Initiating safe disconnect...");
+    // 通知所有等待的线程
+    outbound_queue_cv_.notify_all();
     
-    // 立即关闭网络资源
+    // 关闭网络资源（这会中断阻塞的网络调用）
     closeSocket();
+    
+    // 尝试优雅地等待线程结束
+    auto cleanup_start = std::chrono::steady_clock::now();
+    const auto cleanup_timeout = std::chrono::seconds(3);
+    
+    std::vector<std::thread*> threads = {
+        &tun_reader_thread_,
+        &network_reader_thread_, 
+        &network_writer_thread_,
+        &keepalive_thread_
+    };
+    
+    // 等待线程结束
+    for (auto* thread : threads) {
+        if (thread->joinable()) {
+            try {
+                // 给每个线程最多500ms时间结束
+                auto thread_start = std::chrono::steady_clock::now();
+                while (thread->joinable() && 
+                       std::chrono::steady_clock::now() - thread_start < std::chrono::milliseconds(500)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                
+                if (thread->joinable()) {
+                    thread->detach(); // 如果还没结束，强制分离
+                    logMessage("Thread detached due to timeout");
+                }
+            } catch (...) {
+                logMessage("Exception during thread cleanup");
+            }
+        }
+    }
+    
+    // 关闭TUN接口
     if (tun_interface_) {
         try {
             tun_interface_->setInterfaceStatus(false);
             tun_interface_->closeInterface();
         } catch (...) {
-            // 忽略TUN关闭错误
+            logMessage("Exception during TUN interface cleanup");
         }
-    }
-    
-    // 通知所有等待的线程
-    outbound_queue_cv_.notify_all();
-    
-    // 快速分离所有线程，避免等待
-    if (connection_thread_.joinable()) {
-        connection_thread_.detach();
-    }
-    if (tun_reader_thread_.joinable()) {
-        tun_reader_thread_.detach();
-    }
-    if (network_reader_thread_.joinable()) {
-        network_reader_thread_.detach();
-    }
-    if (network_writer_thread_.joinable()) {
-        network_writer_thread_.detach();
-    }
-    if (keepalive_thread_.joinable()) {
-        keepalive_thread_.detach();
     }
     
     // 清理队列
@@ -162,6 +197,9 @@ void LinuxVPNClient::disconnect() {
             outbound_queue_.pop();
         }
     }
+    
+    // 重置安全上下文
+    secure_context_.reset();
     
     setState(ConnectionState::DISCONNECTED);
     logMessage("VPN connection disconnected safely");
