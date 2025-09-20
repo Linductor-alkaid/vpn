@@ -44,8 +44,8 @@ add_executable(sduvpn-client ${WINDOWS_CLIENT_SOURCES} ${WINDOWS_CLIENT_HEADERS}
 
 # 链接库
 target_link_libraries(sduvpn-client
-    sduvpn_common       # 通用库
-    sduvpn_crypto       # 加密库
+    sduvpn-common       # 通用库
+    sduvpn-crypto       # 加密库
     ws2_32              # Winsock库
     advapi32            # Windows API
     iphlpapi            # IP Helper API

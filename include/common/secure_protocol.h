@@ -349,6 +349,10 @@ private:
     
     std::unique_ptr<crypto::KeyExchangeProtocol> key_exchange_;
     
+    // 保存握手过程中的随机数
+    uint8_t client_random_[16];
+    uint8_t server_random_[16];
+    
     // 内部方法
     uint64_t getCurrentTimestamp() const;
     bool deriveSessionKeys(const uint8_t* client_random, const uint8_t* server_random);

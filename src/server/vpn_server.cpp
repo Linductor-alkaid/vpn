@@ -376,6 +376,9 @@ void VPNServer::handleHandshakeInit(SessionPtr session, const common::SecureMess
     
     // 解析握手初始化消息
     auto payload = message->getPayload();
+    std::cout << "Handshake init payload size: " << payload.second 
+              << ", expected: " << sizeof(common::HandshakeInitMessage) << std::endl;
+    
     if (payload.second < sizeof(common::HandshakeInitMessage)) {
         std::cerr << "Invalid handshake init message size" << std::endl;
         return;
@@ -439,8 +442,55 @@ void VPNServer::handleAuthRequest(SessionPtr session, const common::SecureMessag
     
     std::cout << "Handling auth request from client " << session->getClientId() << std::endl;
     
-    // 简化的认证处理
-    if (session->authenticate("default_user", "default_pass", "SDUVPN Client v1.0")) {
+    // 解析认证请求数据
+    auto payload = message->getPayload();
+    if (!payload.first || payload.second == 0) {
+        std::cerr << "Empty auth request from client " << session->getClientId() << std::endl;
+        return;
+    }
+    
+    std::string auth_data(reinterpret_cast<const char*>(payload.first), payload.second);
+    std::cout << "Auth data length: " << payload.second << std::endl;
+    std::cout << "Message encrypted: " << (message->isEncrypted() ? "yes" : "no") << std::endl;
+    std::cout << "Auth data: " << auth_data << std::endl;
+    
+    // 简单的JSON解析（提取用户名和密码）
+    std::string username, password, client_version = "SDUVPN Client v1.0";
+    
+    // 解析username
+    size_t username_pos = auth_data.find("\"username\":\"");
+    if (username_pos != std::string::npos) {
+        size_t start = username_pos + 12;
+        size_t end = auth_data.find("\"", start);
+        if (end != std::string::npos) {
+            username = auth_data.substr(start, end - start);
+        }
+    }
+    
+    // 解析password
+    size_t password_pos = auth_data.find("\"password\":\"");
+    if (password_pos != std::string::npos) {
+        size_t start = password_pos + 12;
+        size_t end = auth_data.find("\"", start);
+        if (end != std::string::npos) {
+            password = auth_data.substr(start, end - start);
+        }
+    }
+    
+    // 解析client_version
+    size_t version_pos = auth_data.find("\"client_version\":\"");
+    if (version_pos != std::string::npos) {
+        size_t start = version_pos + 18;
+        size_t end = auth_data.find("\"", start);
+        if (end != std::string::npos) {
+            client_version = auth_data.substr(start, end - start);
+        }
+    }
+    
+    std::cout << "Parsed credentials - Username: " << username << ", Version: " << client_version << std::endl;
+    
+    // 进行认证
+    if (session->authenticate(username, password, client_version, config_.get())) {
         // 分配虚拟IP
         std::string virtual_ip = "10.8.0." + std::to_string(session->getClientId() + 1);
         session->assignVirtualIP(virtual_ip);
@@ -452,7 +502,14 @@ void VPNServer::handleAuthRequest(SessionPtr session, const common::SecureMessag
             response->setPayload(reinterpret_cast<const uint8_t*>(auth_response.c_str()), 
                                auth_response.length());
             
-            sendSecureMessage(session, std::move(response));
+            std::cout << "Sending auth response: " << auth_response << std::endl;
+            if (sendSecureMessage(session, std::move(response))) {
+                std::cout << "Auth response sent successfully" << std::endl;
+            } else {
+                std::cout << "Failed to send auth response" << std::endl;
+            }
+        } else {
+            std::cout << "Failed to create auth response message" << std::endl;
         }
         
         std::cout << "Client " << session->getClientId() 

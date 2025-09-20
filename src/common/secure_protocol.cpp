@@ -256,14 +256,26 @@ bool SecureMessage::deserialize(const uint8_t* buffer, size_t buffer_size) {
     // 复制数据
     size_t data_size = buffer_size - HEADER_SIZE;
     if (data_size > 0) {
-        if (header_.type == MessageType::DATA_PACKET) {
-            // 数据包默认是加密的
-            encrypted_data_.assign(buffer + HEADER_SIZE, buffer + buffer_size);
-            encrypted_ = true;
-        } else {
-            // 控制消息默认是明文的
+        // 握手消息总是明文的
+        if (header_.type == MessageType::HANDSHAKE_INIT ||
+            header_.type == MessageType::HANDSHAKE_RESPONSE ||
+            header_.type == MessageType::HANDSHAKE_COMPLETE) {
             payload_.assign(buffer + HEADER_SIZE, buffer + buffer_size);
             encrypted_ = false;
+        } else {
+            // 检测其他消息是否被加密
+            const char* data_ptr = reinterpret_cast<const char*>(buffer + HEADER_SIZE);
+            bool looks_like_json = (data_size > 0 && data_ptr[0] == '{');
+            
+            if (header_.type == MessageType::DATA_PACKET || !looks_like_json) {
+                // 数据包或看起来被加密的数据
+                encrypted_data_.assign(buffer + HEADER_SIZE, buffer + buffer_size);
+                encrypted_ = true;
+            } else {
+                // 看起来像明文的控制消息
+                payload_.assign(buffer + HEADER_SIZE, buffer + buffer_size);
+                encrypted_ = false;
+            }
         }
     }
     
@@ -312,6 +324,8 @@ SecureProtocolContext::SecureProtocolContext()
     , sequence_counter_(0)
     , expected_sequence_(1)
     , key_exchange_(std::make_unique<crypto::KeyExchangeProtocol>()) {
+    crypto::utils::secureZero(client_random_, sizeof(client_random_));
+    crypto::utils::secureZero(server_random_, sizeof(server_random_));
 }
 
 SecureProtocolContext::~SecureProtocolContext() = default;
@@ -355,6 +369,9 @@ bool SecureProtocolContext::startHandshake(HandshakeInitMessage& init_message) {
         return false;
     }
     
+    // 保存客户端随机数
+    std::memcpy(client_random_, init_message.client_random, sizeof(client_random_));
+    
     // 设置客户端版本
     strncpy(init_message.client_version, "SDUVPN Client v1.0", sizeof(init_message.client_version) - 1);
     init_message.client_version[sizeof(init_message.client_version) - 1] = '\0';
@@ -387,8 +404,12 @@ bool SecureProtocolContext::handleHandshakeInit(const HandshakeInitMessage& init
         return false;
     }
     
+    // 保存随机数
+    std::memcpy(client_random_, init_message.client_random, sizeof(client_random_));
+    std::memcpy(server_random_, response_message.server_random, sizeof(server_random_));
+    
     // 派生会话密钥
-    if (!deriveSessionKeys(init_message.client_random, response_message.server_random)) {
+    if (!deriveSessionKeys(client_random_, server_random_)) {
         return false;
     }
     
@@ -420,9 +441,11 @@ bool SecureProtocolContext::handleHandshakeResponse(const HandshakeResponseMessa
         return false;
     }
     
-    // 派生会话密钥
-    uint8_t client_random[16] = {0}; // 这里应该保存之前的客户端随机数
-    if (!deriveSessionKeys(client_random, response_message.server_random)) {
+    // 保存服务端随机数
+    std::memcpy(server_random_, response_message.server_random, sizeof(server_random_));
+    
+    // 派生会话密钥（使用保存的客户端随机数）
+    if (!deriveSessionKeys(client_random_, server_random_)) {
         return false;
     }
     
@@ -444,6 +467,9 @@ bool SecureProtocolContext::handleHandshakeResponse(const HandshakeResponseMessa
     
     // 清理敏感数据
     crypto::utils::secureZero(key_material, sizeof(key_material));
+    
+    // 客户端握手完成
+    handshake_complete_ = true;
     
     std::cout << "SecureProtocol: Handshake response processed" << std::endl;
     return true;

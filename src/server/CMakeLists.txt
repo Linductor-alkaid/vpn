@@ -34,8 +34,8 @@ target_include_directories(sduvpn-server
 # 链接库
 target_link_libraries(sduvpn-server 
     PRIVATE 
-        sduvpn_common
-        sduvpn_crypto
+        sduvpn-common
+        sduvpn-crypto
         ${THIRD_PARTY_LIBRARIES}
 )
 

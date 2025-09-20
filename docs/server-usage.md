@@ -237,7 +237,7 @@ Cleaned up 2 expired sessions
 - 发送 SIGTERM 信号（Linux/macOS）
 - 关闭命令窗口（Windows）
 
-服务器会优雅地关闭：
+服务器会关闭：
 1. 停止接受新连接
 2. 断开所有客户端连接
 3. 关闭网络接口

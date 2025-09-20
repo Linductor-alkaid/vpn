@@ -1,0 +1,19 @@
+{
+  "name": "Example Server Connection",
+  "server_address": "vpn.example.com",
+  "server_port": 1194,
+  "username": "your_username",
+  "password": "your_password",
+  "interface_name": "tun0",
+  "virtual_ip": "10.8.0.2",
+  "virtual_netmask": "255.255.255.0",
+  "keepalive_interval": 30,
+  "connection_timeout": 10,
+  "auto_reconnect": true,
+  "max_reconnect_attempts": 5,
+  "connection_count": 0,
+  "last_connected": "",
+  "created_time": "",
+  "is_favorite": false,
+  "auto_connect": false
+}

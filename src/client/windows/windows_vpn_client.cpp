@@ -761,21 +761,22 @@ void WindowsVPNClient::keepaliveThreadFunc() {
 }
 
 bool WindowsVPNClient::sendKeepalive() {
-    const std::string keepalive_msg = "KEEPALIVE";
-    
-    std::vector<uint8_t> encrypted_keepalive(keepalive_msg.length() + 64);
-    size_t encrypted_length;
-    
-    if (!crypto_context_->encrypt(
-            reinterpret_cast<const uint8_t*>(keepalive_msg.data()),
-            keepalive_msg.length(),
-            encrypted_keepalive.data(),
-            encrypted_keepalive.size(),
-            &encrypted_length)) {
+    if (!secure_context_ || !secure_context_->isHandshakeComplete()) {
         return false;
     }
     
-    return sendToServer(encrypted_keepalive.data(), encrypted_length);
+    // 创建保活消息
+    auto keepalive_message = secure_context_->createMessage(common::MessageType::KEEPALIVE);
+    if (!keepalive_message) {
+        return false;
+    }
+    
+    const std::string keepalive_data = "KEEPALIVE";
+    keepalive_message->setPayload(reinterpret_cast<const uint8_t*>(keepalive_data.c_str()), 
+                                 keepalive_data.length());
+    
+    // 发送安全消息
+    return sendSecureMessage(std::move(keepalive_message));
 }
 
 void WindowsVPNClient::setState(ConnectionState new_state) {

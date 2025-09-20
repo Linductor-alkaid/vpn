@@ -1,4 +1,5 @@
 #include "server/client_session.h"
+#include "server/server_config.h"
 #include <cstring>
 #include <iostream>
 #include <sstream>
@@ -33,12 +34,29 @@ void ClientSession::assignVirtualIP(const std::string& virtual_ip) {
 
 bool ClientSession::authenticate(const std::string& username, 
                                 const std::string& password,
-                                const std::string& client_info) {
-    // 这里应该实现真正的认证逻辑
-    // 目前为简化实现，只做基本验证
-    
+                                const std::string& client_info,
+                                const ServerConfig* server_config) {
     if (username.empty() || password.empty()) {
         return false;
+    }
+    
+    // 如果提供了服务器配置，验证用户名和密码
+    if (server_config) {
+        bool user_found = false;
+        const auto& users = server_config->getUsers();
+        
+        for (const auto& user : users) {
+            if (user.first == username && user.second == password) {
+                user_found = true;
+                break;
+            }
+        }
+        
+        if (!user_found) {
+            std::cerr << "Authentication failed: Invalid username or password for user: " 
+                      << username << std::endl;
+            return false;
+        }
     }
     
     // 解析客户端信息（格式: "version|device_id"）
@@ -64,6 +82,7 @@ bool ClientSession::authenticate(const std::string& username,
     setState(SessionState::AUTHENTICATED);
     updateLastActivity();
     
+    std::cout << "User '" << username << "' authenticated successfully" << std::endl;
     return true;
 }
 

@@ -21,6 +21,9 @@
 namespace sduvpn {
 namespace server {
 
+// 前向声明
+class ServerConfig;
+
 using ClientId = uint32_t;
 
 /**
@@ -101,11 +104,13 @@ public:
      * @param username 用户名
      * @param password 密码
      * @param client_info 客户端信息
+     * @param server_config 服务器配置（用于验证用户）
      * @return 是否认证成功
      */
     bool authenticate(const std::string& username, 
                      const std::string& password,
-                     const std::string& client_info);
+                     const std::string& client_info,
+                     const ServerConfig* server_config = nullptr);
 
     /**
      * @brief 获取认证信息

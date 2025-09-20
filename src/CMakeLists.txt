@@ -12,6 +12,8 @@ add_subdirectory(server)
 # =============================================================================
 if(WIN32)
     add_subdirectory(client/windows)
+elseif(UNIX AND NOT APPLE)
+    add_subdirectory(client/linux)
 endif()
 
 # =============================================================================
