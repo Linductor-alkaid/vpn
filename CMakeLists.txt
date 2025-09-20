@@ -117,6 +117,34 @@ else()
     message(WARNING "✗ Asio 未找到")
 endif()
 
+# libsodium库
+if(EXISTS ${THIRD_PARTY_DIR}/libsodium)
+    message(STATUS "✓ 找到 libsodium")
+    
+    # libsodium配置选项
+    set(SODIUM_DISABLE_TESTS ON CACHE BOOL "" FORCE)
+    set(SODIUM_MINIMAL ON CACHE BOOL "" FORCE)
+    
+    add_subdirectory(${THIRD_PARTY_DIR}/libsodium)
+    list(APPEND THIRD_PARTY_LIBRARIES sodium)
+    list(APPEND THIRD_PARTY_INCLUDE_DIRS ${THIRD_PARTY_DIR}/libsodium/src/libsodium/include)
+else()
+    # 尝试系统安装的libsodium
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(SODIUM QUIET libsodium)
+        if(SODIUM_FOUND)
+            message(STATUS "✓ 找到系统 libsodium")
+            list(APPEND THIRD_PARTY_LIBRARIES ${SODIUM_LIBRARIES})
+            list(APPEND THIRD_PARTY_INCLUDE_DIRS ${SODIUM_INCLUDE_DIRS})
+        else()
+            message(WARNING "✗ libsodium 未找到，请运行 setup_dependencies.bat 或安装系统libsodium")
+        endif()
+    else()
+        message(WARNING "✗ libsodium 未找到，请运行 setup_dependencies.bat")
+    endif()
+endif()
+
 # GoogleTest (暂时禁用，避免编译问题)
 # if(EXISTS ${THIRD_PARTY_DIR}/googletest)
 #     message(STATUS "✓ 找到 GoogleTest")

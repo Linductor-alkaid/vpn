@@ -46,10 +46,8 @@ TEST_F(KeyExchangeTest, ECDHKeyPairGeneration) {
     }
     EXPECT_TRUE(public_key_nonzero);
     
-    // 验证Curve25519私钥格式
-    EXPECT_EQ(private_key[0] & 0x07, 0);  // 低3位应为0
-    EXPECT_EQ(private_key[31] & 0x80, 0); // 最高位应为0
-    EXPECT_EQ(private_key[31] & 0x40, 0x40); // 次高位应为1
+    // libsodium使用标准的密钥格式，不需要特定的位模式检查
+    // 只需验证密钥不全为零即可
     
     std::cout << "Generated private key: " << utils::toHex(private_key, ECDH_PRIVATE_KEY_SIZE) << std::endl;
     std::cout << "Generated public key: " << utils::toHex(public_key, ECDH_PUBLIC_KEY_SIZE) << std::endl;

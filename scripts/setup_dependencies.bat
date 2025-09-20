@@ -57,7 +57,7 @@ if exist googletest (
 )
 
 echo.
-echo [4/4] 下载Asio...
+echo [4/5] 下载Asio...
 if exist asio (
     echo asio目录已存在，跳过下载
 ) else (
@@ -73,6 +73,22 @@ if exist asio (
 )
 
 echo.
+echo [5/5] 下载libsodium...
+if exist libsodium (
+    echo libsodium目录已存在，跳过下载
+) else (
+    git clone https://github.com/jedisct1/libsodium.git libsodium
+    if %ERRORLEVEL% EQU 0 (
+        cd libsodium
+        git checkout 1.0.19-RELEASE
+        cd ..
+        echo ✓ libsodium 下载完成
+    ) else (
+        echo ✗ libsodium 下载失败
+    )
+)
+
+echo.
 echo ========================================
 echo 第三方库下载完成！
 echo ========================================
@@ -82,6 +98,7 @@ if exist json echo ✓ nlohmann/json (v3.11.2)
 if exist spdlog echo ✓ spdlog (v1.12.0)  
 if exist googletest echo ✓ GoogleTest (v1.14.0)
 if exist asio echo ✓ Asio (v1.28.0)
+if exist libsodium echo ✓ libsodium (v1.0.19)
 echo.
 echo 接下来可以运行 cmake 配置项目
 pause

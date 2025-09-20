@@ -1,6 +1,7 @@
 #include "crypto/crypto.h"
 #include <cstring>
 #include <iostream>
+#include <sodium.h>
 
 #if defined(_MSC_VER) && !defined(__INTEL_COMPILER)
     #include <intrin.h>  // for _umul128
@@ -372,23 +373,13 @@ CryptoError ECDH::generateKeyPair(uint8_t* private_key, uint8_t* public_key) {
         return CryptoError::INVALID_PARAMETER;
     }
     
-    // 生成32字节随机私钥
-    CryptoError err = SecureRandom::generate(private_key, ECDH_PRIVATE_KEY_SIZE);
-    if (err != CryptoError::SUCCESS) {
-        return err;
-    }
+    // 使用libsodium生成X25519密钥对
+    crypto_box_keypair(public_key, private_key);
     
-    // 清除私钥的某些位以确保安全性 (Curve25519标准)
-    private_key[0] &= 0xf8;   // 清除低3位
-    private_key[31] &= 0x7f;  // 清除最高位
-    private_key[31] |= 0x40;  // 设置次高位
-    
-    // 计算公钥: public_key = private_key * base_point
-    curve25519_impl::x25519_scalarmult(public_key, private_key, CURVE25519_BASE_POINT);
-    
-    std::cout << "Generated ECDH key pair:" << std::endl;
-    std::cout << "  Private key: " << utils::toHex(private_key, 32) << std::endl;
-    std::cout << "  Public key:  " << utils::toHex(public_key, 32) << std::endl;
+    // 生产环境中不输出敏感密钥信息
+    #ifdef DEBUG
+    std::cout << "Generated ECDH key pair (DEBUG MODE)" << std::endl;
+    #endif
     
     return CryptoError::SUCCESS;
 }
@@ -402,8 +393,10 @@ CryptoError ECDH::computeSharedSecret(
         return CryptoError::INVALID_PARAMETER;
     }
     
-    // 计算共享密钥: shared_secret = private_key * peer_public_key
-    curve25519_impl::x25519_scalarmult(shared_secret, private_key, peer_public_key);
+    // 使用libsodium计算X25519共享密钥
+    if (crypto_scalarmult(shared_secret, private_key, peer_public_key) != 0) {
+        return CryptoError::KEY_GENERATION_FAILED;
+    }
     
     // 验证共享密钥不为零 (安全检查)
     bool is_zero = true;
@@ -419,7 +412,10 @@ CryptoError ECDH::computeSharedSecret(
         return CryptoError::KEY_GENERATION_FAILED;
     }
     
-    std::cout << "Computed shared secret: " << utils::toHex(shared_secret, 32) << std::endl;
+    // 生产环境中不输出敏感共享密钥信息
+    #ifdef DEBUG
+    std::cout << "Computed shared secret (DEBUG MODE)" << std::endl;
+    #endif
     
     return CryptoError::SUCCESS;
 }

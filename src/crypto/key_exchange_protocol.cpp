@@ -21,7 +21,9 @@ CryptoError KeyExchangeProtocol::generateKeyPair() {
     CryptoError result = ECDH::generateKeyPair(private_key_, public_key_);
     if (result == CryptoError::SUCCESS) {
         state_ = State::KEY_GENERATED;
-        std::cout << "KeyExchange: Local key pair generated" << std::endl;
+        #ifdef DEBUG
+        std::cout << "KeyExchange: Local key pair generated (DEBUG MODE)" << std::endl;
+        #endif
     }
     return result;
 }
@@ -98,25 +100,19 @@ CryptoError KeyExchangeProtocol::deriveSessionKeys(const uint8_t* context_info, 
     std::memcpy(session_keys_->encryption_key, derived_keys, AES_256_KEY_SIZE);
     std::memcpy(session_keys_->mac_key, derived_keys + AES_256_KEY_SIZE, SHA_256_HASH_SIZE);
     
-    // 生成随机IV
-    result = SecureRandom::generate(session_keys_->iv, AES_GCM_IV_SIZE);
-    if (result != CryptoError::SUCCESS) {
-        session_keys_.reset();
-        utils::secureZero(shared_secret, sizeof(shared_secret));
-        utils::secureZero(derived_keys, sizeof(derived_keys));
-        return result;
-    }
+    // IV应该在每次加密时单独生成，这里先清零
+    std::memset(session_keys_->iv, 0, AES_GCM_IV_SIZE);
     
     state_ = State::SESSION_READY;
+    
+    // 生产环境中不输出敏感密钥信息
+    #ifdef DEBUG
+    std::cout << "KeyExchange: Session keys derived and ready (DEBUG MODE)" << std::endl;
+    #endif
     
     // 清理敏感数据
     utils::secureZero(shared_secret, sizeof(shared_secret));
     utils::secureZero(derived_keys, sizeof(derived_keys));
-    
-    std::cout << "KeyExchange: Session keys derived and ready" << std::endl;
-    std::cout << "  Encryption key: " << utils::toHex(session_keys_->encryption_key, AES_256_KEY_SIZE) << std::endl;
-    std::cout << "  MAC key:        " << utils::toHex(session_keys_->mac_key, SHA_256_HASH_SIZE) << std::endl;
-    std::cout << "  IV:             " << utils::toHex(session_keys_->iv, AES_GCM_IV_SIZE) << std::endl;
     
     return CryptoError::SUCCESS;
 }
@@ -145,26 +141,32 @@ CryptoError KeyExchangeProtocol::computeSharedSecret(uint8_t* shared_secret) {
         return CryptoError::INVALID_PARAMETER;
     }
     
-    // 使用我们简化的协议：
-    // 共享密钥 = SHA256(min(local_public, peer_public) || max(local_public, peer_public))
-    uint8_t key_material[64];
+    // 使用真正的ECDH算法计算共享密钥
+    // shared_secret = private_key * peer_public_key (椭圆曲线标量乘法)
+    CryptoError result = ECDH::computeSharedSecret(
+        private_key_,
+        peer_public_key_,
+        shared_secret
+    );
     
-    // 按字典序排列公钥，确保双方计算出相同的共享密钥
-    if (std::memcmp(public_key_, peer_public_key_, ECDH_PUBLIC_KEY_SIZE) <= 0) {
-        std::memcpy(key_material, public_key_, ECDH_PUBLIC_KEY_SIZE);
-        std::memcpy(key_material + ECDH_PUBLIC_KEY_SIZE, peer_public_key_, ECDH_PUBLIC_KEY_SIZE);
-    } else {
-        std::memcpy(key_material, peer_public_key_, ECDH_PUBLIC_KEY_SIZE);
-        std::memcpy(key_material + ECDH_PUBLIC_KEY_SIZE, public_key_, ECDH_PUBLIC_KEY_SIZE);
+    if (result != CryptoError::SUCCESS) {
+        return result;
     }
     
-    // 计算共享密钥
-    CryptoError result = SHA256::hash(key_material, 64, shared_secret);
+    // 验证共享密钥不为零 (安全检查)
+    bool is_zero = true;
+    for (size_t i = 0; i < ECDH_SHARED_SECRET_SIZE; ++i) {
+        if (shared_secret[i] != 0) {
+            is_zero = false;
+            break;
+        }
+    }
     
-    // 清理临时数据
-    utils::secureZero(key_material, sizeof(key_material));
+    if (is_zero) {
+        return CryptoError::KEY_GENERATION_FAILED;
+    }
     
-    return result;
+    return CryptoError::SUCCESS;
 }
 
 } // namespace crypto

@@ -35,6 +35,12 @@ target_include_directories(sduvpn-crypto
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+# 链接第三方库
+target_link_libraries(sduvpn-crypto 
+    PRIVATE 
+        ${THIRD_PARTY_LIBRARIES}
+)
+
 # 平台特定链接库
 if(WIN32)
     # Windows平台使用CryptoAPI
