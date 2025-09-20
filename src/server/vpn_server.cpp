@@ -626,9 +626,20 @@ void VPNServer::handleKeepAlive(SessionPtr session, const common::SecureMessage*
     // 显式更新活跃时间（确保心跳包能重置超时计时器）
     session->updateLastActivity();
     
-    std::cout << "Handling keepalive from client " << session->getClientId() 
-              << ", state: " << static_cast<int>(session->getState()) 
-              << ", handshake_complete: " << (session->isHandshakeComplete() ? "yes" : "no") << std::endl;
+    // 记录心跳包接收时间以便调试
+    auto now = std::chrono::steady_clock::now();
+    static std::unordered_map<ClientId, std::chrono::steady_clock::time_point> last_keepalive_time;
+    
+    auto it = last_keepalive_time.find(session->getClientId());
+    if (it != last_keepalive_time.end()) {
+        auto interval = std::chrono::duration_cast<std::chrono::seconds>(now - it->second);
+        std::cout << "Keepalive from client " << session->getClientId() 
+                  << " (interval: " << interval.count() << "s, state: " << static_cast<int>(session->getState()) << ")" << std::endl;
+    } else {
+        std::cout << "First keepalive from client " << session->getClientId() 
+                  << " (state: " << static_cast<int>(session->getState()) << ")" << std::endl;
+    }
+    last_keepalive_time[session->getClientId()] = now;
     
     // 检查会话状态是否适合发送响应
     if (session->getState() != SessionState::ACTIVE) {
@@ -958,9 +969,15 @@ void VPNServer::cleanupInactiveSessions() {
                 }
                 
                 if (pair.second->isExpired(timeout_seconds)) {
+                    // 计算实际的非活跃时间
+                    auto now = std::chrono::steady_clock::now();
+                    auto last_activity = pair.second->getStats().last_activity;
+                    auto inactive_duration = std::chrono::duration_cast<std::chrono::seconds>(now - last_activity);
+                    
                     expired_clients.push_back(pair.first);
                     std::cout << "Session " << pair.first << " expired (state: " << static_cast<int>(state) 
-                              << ", timeout: " << timeout_seconds << "s)" << std::endl;
+                              << ", timeout: " << timeout_seconds << "s"
+                              << ", inactive_for: " << inactive_duration.count() << "s)" << std::endl;
                 }
                 // 立即清理已断开连接的会话
                 else if (state == SessionState::DISCONNECTED) {
