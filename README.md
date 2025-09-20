@@ -41,13 +41,40 @@ chmod +x scripts/setup_dependencies.sh
 | GoogleTest | https://github.com/google/googletest | v1.14.0 | 单元测试 |
 | Asio | https://github.com/chriskohlhoff/asio | asio-1-28-0 | 网络I/O |
 
-### 2. 构建项目
+### 2. 安装 libsodium
 
-**Windows (Visual Studio)**:
+**重要**: libsodium 不再作为第三方库包含，需要单独安装：
+
+**Windows**:
+```batch
+# 使用 vcpkg 安装 (推荐)
+vcpkg install libsodium:x64-windows
+```
+
+**Linux**:
+```bash
+# Ubuntu/Debian
+sudo apt install libsodium-dev
+
+# CentOS/RHEL
+sudo yum install libsodium-devel
+```
+
+**macOS**:
+```bash
+# 使用 Homebrew
+brew install libsodium
+```
+
+**详细安装说明**: 请参阅 [docs/libsodium-installation.md](docs/libsodium-installation.md)
+
+### 3. 构建项目
+
+**Windows (使用 vcpkg)**:
 ```batch
 mkdir build
 cd build
-cmake .. -G "Visual Studio 17 2022"
+cmake .. -DCMAKE_TOOLCHAIN_FILE=[vcpkg路径]/scripts/buildsystems/vcpkg.cmake -G "Visual Studio 17 2022"
 cmake --build . --config Release
 ```
 
@@ -58,7 +85,7 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 ```
 
-### 3. 运行测试
+### 4. 运行测试
 
 ```bash
 cd build

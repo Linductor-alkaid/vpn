@@ -73,20 +73,17 @@ if exist asio (
 )
 
 echo.
-echo [5/5] 下载libsodium...
-if exist libsodium (
-    echo libsodium目录已存在，跳过下载
-) else (
-    git clone https://github.com/jedisct1/libsodium.git libsodium
-    if %ERRORLEVEL% EQU 0 (
-        cd libsodium
-        git checkout 1.0.19-RELEASE
-        cd ..
-        echo ✓ libsodium 下载完成
-    ) else (
-        echo ✗ libsodium 下载失败
-    )
-)
+echo [5/5] libsodium 安装提示...
+echo.
+echo ⚠️  注意: 本项目不再将 libsodium 作为第三方库下载
+echo    请使用以下方式安装 libsodium:
+echo.
+echo    Windows: vcpkg install libsodium
+echo    Linux:   sudo apt install libsodium-dev
+echo    macOS:   brew install libsodium
+echo.
+echo    详细安装说明请参阅: docs/libsodium-installation.md
+echo.
 
 echo.
 echo ========================================
@@ -98,7 +95,9 @@ if exist json echo ✓ nlohmann/json (v3.11.2)
 if exist spdlog echo ✓ spdlog (v1.12.0)  
 if exist googletest echo ✓ GoogleTest (v1.14.0)
 if exist asio echo ✓ Asio (v1.28.0)
-if exist libsodium echo ✓ libsodium (v1.0.19)
 echo.
-echo 接下来可以运行 cmake 配置项目
+echo 需要单独安装的库：
+echo   libsodium - 请参阅 docs/libsodium-installation.md
+echo.
+echo 接下来请先安装 libsodium，然后运行 cmake 配置项目
 pause

@@ -117,19 +117,16 @@ else()
     message(WARNING "✗ Asio 未找到")
 endif()
 
-# libsodium库
-if(EXISTS ${THIRD_PARTY_DIR}/libsodium)
-    message(STATUS "✓ 找到 libsodium")
-    
-    # libsodium配置选项
-    set(SODIUM_DISABLE_TESTS ON CACHE BOOL "" FORCE)
-    set(SODIUM_MINIMAL ON CACHE BOOL "" FORCE)
-    
-    add_subdirectory(${THIRD_PARTY_DIR}/libsodium)
-    list(APPEND THIRD_PARTY_LIBRARIES sodium)
-    list(APPEND THIRD_PARTY_INCLUDE_DIRS ${THIRD_PARTY_DIR}/libsodium/src/libsodium/include)
+# libsodium库 - 不再支持 third_party 方式，请使用系统安装或 vcpkg
+# 详细安装说明请参阅: docs/libsodium-installation.md
+
+# 优先尝试 vcpkg 安装的 libsodium（Windows 推荐）
+find_package(unofficial-sodium CONFIG QUIET)
+if(unofficial-sodium_FOUND)
+    message(STATUS "✓ 找到 vcpkg libsodium")
+    list(APPEND THIRD_PARTY_LIBRARIES unofficial-sodium::sodium)
 else()
-    # 尝试系统安装的libsodium
+    # 尝试系统安装的 libsodium（Linux/macOS 推荐）
     find_package(PkgConfig QUIET)
     if(PKG_CONFIG_FOUND)
         pkg_check_modules(SODIUM QUIET libsodium)
@@ -138,10 +135,10 @@ else()
             list(APPEND THIRD_PARTY_LIBRARIES ${SODIUM_LIBRARIES})
             list(APPEND THIRD_PARTY_INCLUDE_DIRS ${SODIUM_INCLUDE_DIRS})
         else()
-            message(WARNING "✗ libsodium 未找到，请运行 setup_dependencies.bat 或安装系统libsodium")
+            message(FATAL_ERROR "✗ libsodium 未找到！请参阅 docs/libsodium-installation.md 获取安装说明")
         endif()
     else()
-        message(WARNING "✗ libsodium 未找到，请运行 setup_dependencies.bat")
+        message(FATAL_ERROR "✗ libsodium 未找到！请参阅 docs/libsodium-installation.md 获取安装说明")
     endif()
 endif()
 
