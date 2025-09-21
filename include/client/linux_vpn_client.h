@@ -86,6 +86,7 @@ private:
     bool performHandshake();
     bool authenticateWithServer();
     bool setupTunnel();
+    bool performReconnect();
     
     // 数据处理线程
     void tunReaderThreadFunc();

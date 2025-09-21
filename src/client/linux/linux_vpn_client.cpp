@@ -1039,6 +1039,69 @@ LinuxVPNClient::BandwidthTestResult LinuxVPNClient::performBandwidthTest(uint32_
     return result;
 }
 
+bool LinuxVPNClient::performReconnect() {
+    // 内部重连方法，避免递归调用connect()
+    try {
+        logMessage("Performing internal reconnection...");
+        
+        // 检查当前状态
+        if (connection_state_.load() != ConnectionState::ERROR_STATE) {
+            logMessage("Not in error state, skipping reconnection");
+            return false;
+        }
+        
+        // 重置状态
+        should_stop_.store(false);
+        setState(ConnectionState::CONNECTING);
+        
+        // 清理之前的线程（如果还有的话）
+        if (connection_thread_.joinable()) connection_thread_.detach();
+        if (tun_reader_thread_.joinable()) tun_reader_thread_.detach();
+        if (network_reader_thread_.joinable()) network_reader_thread_.detach();
+        if (network_writer_thread_.joinable()) network_writer_thread_.detach();
+        if (keepalive_thread_.joinable()) keepalive_thread_.detach();
+        
+        // 清空队列
+        {
+            std::lock_guard<std::mutex> queue_lock(outbound_queue_mutex_);
+            while (!outbound_queue_.empty()) {
+                outbound_queue_.pop();
+            }
+        }
+        
+        // 启动新的连接线程
+        connection_thread_ = std::thread(&LinuxVPNClient::connectionThreadFunc, this);
+        
+        // 等待连接建立
+        auto start_time = std::chrono::steady_clock::now();
+        const auto timeout = std::chrono::seconds(30);
+        
+        while (std::chrono::steady_clock::now() - start_time < timeout) {
+            auto state = connection_state_.load();
+            
+            if (state == ConnectionState::CONNECTED) {
+                logMessage("Internal reconnection successful");
+                return true;
+            } else if (state == ConnectionState::ERROR_STATE) {
+                logMessage("Internal reconnection failed");
+                return false;
+            }
+            
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+        
+        logMessage("Internal reconnection timeout");
+        return false;
+        
+    } catch (const std::exception& e) {
+        logMessage("Exception in performReconnect: " + std::string(e.what()));
+        return false;
+    } catch (...) {
+        logMessage("Unknown exception in performReconnect");
+        return false;
+    }
+}
+
 void LinuxVPNClient::setState(ConnectionState new_state) {
     try {
         connection_state_.store(new_state);
@@ -1134,8 +1197,8 @@ void LinuxVPNClient::reconnectThreadFunc() {
                     break;
                 }
                 
-                // 尝试重新连接 - 使用Linux特定的connect方法避免递归
-                if (connect(static_cast<LinuxConnectionConfig>(config_))) {
+                // 尝试重新连接 - 直接调用内部连接逻辑避免递归
+                if (performReconnect()) {
                     logMessage("Reconnection successful");
                     reconnect_attempts = 0; // 重置重连计数
                     
