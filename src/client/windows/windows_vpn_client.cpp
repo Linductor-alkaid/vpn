@@ -515,10 +515,42 @@ void WindowsVPNClient::tapReaderThreadFunc() {
                     ping_packets++;
                     logMessage("[TAP Reader] Read ping packet: " + std::to_string(bytes_read) + " bytes (ping count: " + std::to_string(ping_packets) + ")");
                     
-                    if (handlePingPacket(buffer, bytes_read)) {
-                        logMessage("[TAP Reader] Successfully handled ping packet");
+                    // 检查ping包的目标地址
+                    const uint8_t* ip_header = buffer + 14;
+                    uint32_t dest_ip = (ip_header[16] << 24) | (ip_header[17] << 16) | (ip_header[18] << 8) | ip_header[19];
+                    uint32_t local_ip = (ip_header[12] << 24) | (ip_header[13] << 16) | (ip_header[14] << 8) | ip_header[15];
+                    
+                    // 检查是否是ping本地TAP接口的包
+                    std::string local_virtual_ip = getVirtualIP();
+                    uint32_t local_virtual_ip_int = 0;
+                    if (!local_virtual_ip.empty()) {
+                        // 解析本地虚拟IP
+                        std::istringstream iss(local_virtual_ip);
+                        std::string token;
+                        int i = 0;
+                        while (std::getline(iss, token, '.')) {
+                            local_virtual_ip_int |= (std::stoi(token) << (24 - i * 8));
+                            i++;
+                        }
+                    }
+                    
+                    // 如果ping包的目标是本地TAP接口，则本地回复
+                    // 否则转发到服务端
+                    if (dest_ip == local_virtual_ip_int) {
+                        logMessage("[TAP Reader] Ping packet to local TAP interface, handling locally");
+                        if (handlePingPacket(buffer, bytes_read)) {
+                            logMessage("[TAP Reader] Successfully handled local ping packet");
+                        } else {
+                            logMessage("[TAP Reader] Failed to handle local ping packet");
+                        }
                     } else {
-                        logMessage("[TAP Reader] Failed to handle ping packet");
+                        logMessage("[TAP Reader] Ping packet to remote address, forwarding to server");
+                        // 转发ping包到服务端
+                        if (processTapPacket(buffer, bytes_read)) {
+                            logMessage("[TAP Reader] Successfully forwarded ping packet to server");
+                        } else {
+                            logMessage("[TAP Reader] Failed to forward ping packet to server");
+                        }
                     }
                 } else {
                     // 检查是否是有效的IP数据包
