@@ -85,7 +85,7 @@ bool checkSystemRequirements() {
 }
 
 bool handleConnectCommand(const std::vector<std::string>& args) {
-    LinuxVPNClient::ConnectionConfig config;
+    LinuxVPNClient::LinuxConnectionConfig config;
     
     // 解析命令行参数
     for (size_t i = 1; i < args.size(); i++) {

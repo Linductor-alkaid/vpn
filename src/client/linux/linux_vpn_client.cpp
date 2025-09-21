@@ -17,135 +17,81 @@ LinuxVPNClient::LinuxVPNClient()
 }
 
 LinuxVPNClient::~LinuxVPNClient() {
-    // 安全析构：首先尝试优雅断开
     try {
-        if (connection_state_.load() != ConnectionState::DISCONNECTED) {
-            disconnect();
-        }
-    } catch (...) {
-        // 如果优雅断开失败，强制清理
-    }
-    
-    // 强制停止标志
-    should_stop_.store(true);
-    
-    // 通知所有等待的线程
-    outbound_queue_cv_.notify_all();
-    
-    // 强制关闭所有资源
-    closeSocket();
-    if (tun_interface_) {
-        try {
-            tun_interface_->closeInterface();
-        } catch (...) {
-            // 忽略析构时的错误
-        }
-    }
-    
-    // 等待线程结束（析构时给较短的时间）
-    const auto cleanup_timeout = std::chrono::milliseconds(1000); // 1秒
-    
-    std::vector<std::thread*> threads = {
-        &connection_thread_,
-        &tun_reader_thread_,
-        &network_reader_thread_, 
-        &network_writer_thread_,
-        &keepalive_thread_
-    };
-    
-    for (auto* thread : threads) {
-        if (thread->joinable()) {
+        // 安全析构：强制停止所有活动
+        should_stop_.store(true);
+        
+        // 通知所有等待的线程
+        outbound_queue_cv_.notify_all();
+        
+        // 关闭所有资源
+        closeSocket();
+        if (tun_interface_) {
             try {
-                auto thread_start = std::chrono::steady_clock::now();
-                while (thread->joinable() && 
-                       std::chrono::steady_clock::now() - thread_start < std::chrono::milliseconds(200)) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                }
-                
-                if (thread->joinable()) {
-                    // 析构时优先使用join()，避免detach()导致的内存安全问题
-                    try {
-                        thread->join();
-                    } catch (...) {
-                        // 只有在join失败时才使用detach作为最后手段
-                        thread->detach();
-                    }
-                }
+                tun_interface_->closeInterface();
             } catch (...) {
-                // 忽略析构时的异常
+                // 忽略析构时的错误
             }
         }
+        
+        // 强制设置状态为断开，确保所有线程能正确退出
+        connection_state_.store(ConnectionState::DISCONNECTED);
+        
+        // 安全地等待所有线程结束
+        waitForThreadsToFinish();
+        
+        // 清理安全上下文
+        secure_context_.reset();
+        
+    } catch (...) {
+        // 析构函数不能抛出异常，忽略所有异常
     }
 }
 
 bool LinuxVPNClient::connect(const ConnectionConfig& config) {
+    // 转换为Linux特定配置
+    LinuxConnectionConfig linux_config;
+    linux_config.server_address = config.server_address;
+    linux_config.server_port = config.server_port;
+    linux_config.username = config.username;
+    linux_config.password = config.password;
+    linux_config.interface_name = config.interface_name;
+    linux_config.virtual_ip = config.virtual_ip;
+    linux_config.virtual_netmask = config.virtual_netmask;
+    linux_config.keepalive_interval = config.keepalive_interval;
+    linux_config.connection_timeout = config.connection_timeout;
+    linux_config.auto_reconnect = config.auto_reconnect;
+    linux_config.max_reconnect_attempts = config.max_reconnect_attempts;
+    
+    return connect(linux_config);
+}
+
+bool LinuxVPNClient::connect(const LinuxConnectionConfig& config) {
     // 使用互斥锁保护整个连接过程
     static std::mutex connect_mutex;
     std::lock_guard<std::mutex> connect_lock(connect_mutex);
     
     auto current_state = connection_state_.load();
     
-    // 防止在连接过程中重复调用
-    if (current_state == ConnectionState::CONNECTING || 
-        current_state == ConnectionState::AUTHENTICATING) {
-        logMessage("Connection already in progress, ignoring new request");
-        return false;
-    }
-    
-    // 如果正在连接或已连接，先优雅断开
+    // 如果正在连接或已连接，先完全断开
     if (current_state != ConnectionState::DISCONNECTED) {
-        logMessage("Gracefully disconnecting existing connection before reconnecting...");
+        logMessage("Force disconnecting existing connection before reconnecting...");
         
-        // 优雅断开
+        // 调用标准的disconnect方法，确保完全清理
         disconnect();
         
-        // 等待断开完成（缩短超时时间）
-        auto disconnect_start = std::chrono::steady_clock::now();
-        const auto disconnect_timeout = std::chrono::seconds(2);
+        // 确保所有线程对象都已清理
+        if (connection_thread_.joinable()) connection_thread_.detach();
+        if (tun_reader_thread_.joinable()) tun_reader_thread_.detach();
+        if (network_reader_thread_.joinable()) network_reader_thread_.detach();
+        if (network_writer_thread_.joinable()) network_writer_thread_.detach();
+        if (keepalive_thread_.joinable()) keepalive_thread_.detach();
+        if (reconnect_thread_.joinable()) reconnect_thread_.detach();
         
-        while (connection_state_.load() != ConnectionState::DISCONNECTED && 
-               std::chrono::steady_clock::now() - disconnect_start < disconnect_timeout) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        }
+        // 额外等待确保所有资源都已清理
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
         
-        // 如果优雅断开失败，强制清理
-        if (connection_state_.load() != ConnectionState::DISCONNECTED) {
-            logMessage("Graceful disconnect failed, forcing cleanup...");
-            should_stop_.store(true);
-            closeSocket();
-            if (tun_interface_) {
-                tun_interface_->closeInterface();
-            }
-            
-            // 等待线程结束（最多1秒）
-            auto cleanup_start = std::chrono::steady_clock::now();
-            const auto cleanup_timeout = std::chrono::seconds(1);
-            
-            while (std::chrono::steady_clock::now() - cleanup_start < cleanup_timeout) {
-                bool all_finished = true;
-                if (connection_thread_.joinable()) all_finished = false;
-                if (tun_reader_thread_.joinable()) all_finished = false;
-                if (network_reader_thread_.joinable()) all_finished = false;
-                if (network_writer_thread_.joinable()) all_finished = false;
-                if (keepalive_thread_.joinable()) all_finished = false;
-                
-                if (all_finished) break;
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-            
-            // 强制分离剩余线程（快速清理，避免阻塞）
-            if (connection_thread_.joinable()) connection_thread_.detach();
-            if (tun_reader_thread_.joinable()) tun_reader_thread_.detach();
-            if (network_reader_thread_.joinable()) network_reader_thread_.detach();
-            if (network_writer_thread_.joinable()) network_writer_thread_.detach();
-            if (keepalive_thread_.joinable()) keepalive_thread_.detach();
-            
-            logMessage("All threads detached during forced cleanup");
-            
-            setState(ConnectionState::DISCONNECTED);
-        }
-        
-        logMessage("Previous connection cleaned up");
+        logMessage("Previous connection completely cleaned up");
     }
     
     // 重置所有状态
@@ -162,13 +108,14 @@ bool LinuxVPNClient::connect(const ConnectionConfig& config) {
     
     setState(ConnectionState::CONNECTING);
     
-    // 快速清理之前的连接线程
-    if (connection_thread_.joinable()) {
-        connection_thread_.detach();
-    }
-    
     // 启动新的连接线程
-    connection_thread_ = std::thread(&LinuxVPNClient::connectionThreadFunc, this);
+    try {
+        connection_thread_ = std::thread(&LinuxVPNClient::connectionThreadFunc, this);
+    } catch (const std::exception& e) {
+        setLastError("Failed to create connection thread: " + std::string(e.what()));
+        setState(ConnectionState::ERROR_STATE);
+        return false;
+    }
     
     logMessage("New connection attempt started");
     return true;
@@ -180,11 +127,23 @@ void LinuxVPNClient::disconnect() {
         return; // 已经断开连接
     }
     
+    // 避免重复断开
+    static std::mutex disconnect_mutex;
+    std::lock_guard<std::mutex> disconnect_lock(disconnect_mutex);
+    
+    // 再次检查状态，避免在等待锁期间状态已改变
+    if (connection_state_.load() == ConnectionState::DISCONNECTED) {
+        return;
+    }
+    
     logMessage("Initiating safe disconnect...");
     
     // 设置停止标志
     should_stop_.store(true);
     setState(ConnectionState::DISCONNECTING);
+    
+    // 停止自动重连线程
+    stopReconnectThread();
     
     // 通知所有等待的线程
     outbound_queue_cv_.notify_all();
@@ -199,7 +158,8 @@ void LinuxVPNClient::disconnect() {
         &tun_reader_thread_,
         &network_reader_thread_, 
         &network_writer_thread_,
-        &keepalive_thread_
+        &keepalive_thread_,
+        &reconnect_thread_
     };
     
     // 等待线程结束
@@ -255,9 +215,15 @@ void LinuxVPNClient::disconnect() {
     logMessage("VPN connection disconnected safely");
 }
 
-LinuxVPNClient::ConnectionStats LinuxVPNClient::getConnectionStats() const {
+common::VPNClientInterface::ConnectionStats LinuxVPNClient::getConnectionStats() const {
     std::lock_guard<std::mutex> lock(stats_mutex_);
-    return stats_;
+    common::VPNClientInterface::ConnectionStats base_stats;
+    base_stats.bytes_sent = stats_.bytes_sent;
+    base_stats.bytes_received = stats_.bytes_received;
+    base_stats.packets_sent = stats_.packets_sent;
+    base_stats.packets_received = stats_.packets_received;
+    base_stats.connection_start_time = stats_.connection_start_time;
+    return base_stats;
 }
 
 std::string LinuxVPNClient::getLastError() const {
@@ -359,6 +325,11 @@ void LinuxVPNClient::connectionThreadFunc() {
         setState(ConnectionState::CONNECTED);
         stats_.connection_start_time = std::chrono::steady_clock::now();
         logMessage("VPN connection established successfully");
+        
+        // 启动自动重连线程（如果启用）
+        if (config_.auto_reconnect) {
+            startReconnectThread();
+        }
         
         // 等待断开信号
         while (!should_stop_.load() && connection_state_.load() == ConnectionState::CONNECTED) {
@@ -601,23 +572,73 @@ void LinuxVPNClient::networkReaderThreadFunc() {
     logMessage("Network reader thread started");
     
     uint8_t buffer[NETWORK_BUFFER_SIZE];
+    int consecutive_timeouts = 0;
+    const int max_timeouts = 12; // 连续12次超时（60秒）后认为服务器断开
+    auto last_successful_receive = std::chrono::steady_clock::now();
     
     try {
         while (!should_stop_.load()) {
-            size_t received_length;
-            if (receiveFromServer(buffer, sizeof(buffer), &received_length)) {
-                if (received_length > 0) {
-                    logMessage("Received " + std::to_string(received_length) + " bytes from server");
-                    if (!processNetworkPacket(buffer, received_length)) {
-                        logMessage("Failed to process network packet");
+            // 只有在连接过程中才处理网络数据包
+            if (connection_state_.load() != ConnectionState::DISCONNECTED &&
+                connection_state_.load() != ConnectionState::ERROR_STATE) {
+                size_t received_length;
+                if (receiveFromServer(buffer, sizeof(buffer), &received_length)) {
+                    if (received_length > 0) {
+                        processNetworkPacket(buffer, received_length);
+                        consecutive_timeouts = 0; // 重置超时计数
+                        last_successful_receive = std::chrono::steady_clock::now();
                     }
+                    // 即使收到0字节，也重置超时计数（说明服务器还在响应）
+                    consecutive_timeouts = 0;
+                } else {
+                    // 如果套接字已关闭，退出循环
+                    if (udp_socket_ < 0) {
+                        break;
+                    }
+                    
+                    // 检查是否是真正的网络错误
+                    int error = errno;
+                    if (error == ETIMEDOUT || error == EAGAIN || error == EWOULDBLOCK || error == 0) {
+                        // 接收超时，检查是否连续超时过多
+                        consecutive_timeouts++;
+                        
+                        // 检查总的无响应时间
+                        auto now = std::chrono::steady_clock::now();
+                        auto no_response_duration = std::chrono::duration_cast<std::chrono::seconds>(
+                            now - last_successful_receive);
+                        
+                        // 如果连续超时过多或无响应时间过长，且处于连接状态
+                        if ((consecutive_timeouts >= max_timeouts || no_response_duration.count() >= 60) &&
+                            connection_state_.load() == ConnectionState::CONNECTED) {
+                            logMessage("Server appears to be disconnected (no response for " + 
+                                     std::to_string(no_response_duration.count()) + " seconds, timeouts: " +
+                                     std::to_string(consecutive_timeouts) + ")");
+                            setState(ConnectionState::ERROR_STATE);
+                            setLastError("Server connection lost");
+                            break;
+                        }
+                        
+                        // 定期报告无响应状态（每10秒一次）
+                        if (no_response_duration.count() > 0 && no_response_duration.count() % 10 == 0 &&
+                            consecutive_timeouts % 2 == 0) { // 避免重复日志
+                            logMessage("No server response for " + std::to_string(no_response_duration.count()) + " seconds");
+                        }
+                    } else {
+                        // 真正的网络错误，立即认为连接断开
+                        if (connection_state_.load() == ConnectionState::CONNECTED) {
+                            logMessage("Network error detected: " + std::to_string(error));
+                            setState(ConnectionState::ERROR_STATE);
+                            setLastError("Network error: " + std::to_string(error));
+                            break;
+                        }
+                    }
+                    
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 }
             } else {
-                // 如果套接字已关闭，退出循环
-                if (udp_socket_ < 0) {
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                // 如果已断开连接，等待一段时间后退出
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                break;
             }
         }
     } catch (const std::exception& e) {
@@ -877,13 +898,12 @@ bool LinuxVPNClient::receiveFromServer(uint8_t* buffer, size_t buffer_size, size
     FD_SET(udp_socket_, &read_fds);
     
     struct timeval timeout;
-    timeout.tv_sec = 10;  // 10秒超时
+    timeout.tv_sec = 5;  // 设置为5秒超时，平衡响应性和稳定性
     timeout.tv_usec = 0;
     
     int result = select(udp_socket_ + 1, &read_fds, nullptr, nullptr, &timeout);
     if (result == 0) {
-        // 超时
-        logMessage("Receive timeout after " + std::to_string(timeout.tv_sec) + " seconds");
+        // 超时（正常情况，不记录日志避免刷屏）
         return false;
     } else if (result < 0) {
         setLastError("Select error: " + std::string(strerror(errno)));
@@ -1143,6 +1163,91 @@ void LinuxVPNClient::setLastError(const std::string& error) {
     logMessage("Error: " + error);
 }
 
+void LinuxVPNClient::startReconnectThread() {
+    if (config_.auto_reconnect && !reconnect_thread_.joinable()) {
+        reconnect_thread_ = std::thread(&LinuxVPNClient::reconnectThreadFunc, this);
+        logMessage("Auto-reconnect thread started");
+    }
+}
+
+void LinuxVPNClient::stopReconnectThread() {
+    if (reconnect_thread_.joinable()) {
+        reconnect_thread_.detach();
+        logMessage("Auto-reconnect thread stopped");
+    }
+}
+
+void LinuxVPNClient::reconnectThreadFunc() {
+    logMessage("Reconnect thread started");
+    
+    uint32_t reconnect_attempts = 0;
+    const uint32_t max_attempts = config_.max_reconnect_attempts;
+    const auto reconnect_delay = std::chrono::seconds(5); // 5秒重连延迟
+    
+    while (!should_stop_.load() && reconnect_attempts < max_attempts) {
+        // 等待连接错误状态
+        if (connection_state_.load() == ConnectionState::ERROR_STATE) {
+            reconnect_attempts++;
+            
+            logMessage("Attempting reconnection " + std::to_string(reconnect_attempts) + 
+                      "/" + std::to_string(max_attempts));
+            
+            // 等待一段时间后尝试重连
+            std::this_thread::sleep_for(reconnect_delay);
+            
+            if (should_stop_.load()) {
+                break;
+            }
+            
+            // 尝试重新连接
+            if (connect(config_)) {
+                logMessage("Reconnection successful");
+                reconnect_attempts = 0; // 重置重连计数
+                
+                // 更新统计信息
+                {
+                    std::lock_guard<std::mutex> lock(stats_mutex_);
+                    stats_.reconnect_count++;
+                }
+                
+                // 等待连接建立或失败
+                auto start_time = std::chrono::steady_clock::now();
+                const auto timeout = std::chrono::seconds(30);
+                
+                while (std::chrono::steady_clock::now() - start_time < timeout) {
+                    auto state = connection_state_.load();
+                    
+                    if (state == ConnectionState::CONNECTED) {
+                        logMessage("Reconnection completed successfully");
+                        break;
+                    } else if (state == ConnectionState::ERROR_STATE) {
+                        logMessage("Reconnection failed");
+                        break;
+                    }
+                    
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                }
+            } else {
+                logMessage("Failed to initiate reconnection");
+            }
+        } else {
+            // 如果连接正常，重置重连计数
+            if (connection_state_.load() == ConnectionState::CONNECTED) {
+                reconnect_attempts = 0;
+            }
+            
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }
+    
+    if (reconnect_attempts >= max_attempts) {
+        logMessage("Maximum reconnection attempts reached, giving up");
+        setLastError("Maximum reconnection attempts reached");
+    }
+    
+    logMessage("Reconnect thread stopped");
+}
+
 // LinuxVPNClientManager implementation
 LinuxVPNClientManager& LinuxVPNClientManager::getInstance() {
     static LinuxVPNClientManager instance;
@@ -1173,6 +1278,44 @@ bool LinuxVPNClientManager::hasRootPrivileges() {
 
 bool LinuxVPNClientManager::isTunModuleAvailable() {
     return LinuxTunInterface::isTunModuleAvailable();
+}
+
+void LinuxVPNClient::waitForThreadsToFinish() {
+    // 等待线程结束（析构时给较短的时间）
+    const auto cleanup_timeout = std::chrono::milliseconds(1000); // 1秒
+    
+    std::vector<std::thread*> threads = {
+        &connection_thread_,
+        &tun_reader_thread_,
+        &network_reader_thread_, 
+        &network_writer_thread_,
+        &keepalive_thread_,
+        &reconnect_thread_
+    };
+    
+    for (auto* thread : threads) {
+        if (thread->joinable()) {
+            try {
+                auto thread_start = std::chrono::steady_clock::now();
+                while (thread->joinable() && 
+                       std::chrono::steady_clock::now() - thread_start < std::chrono::milliseconds(200)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                
+                if (thread->joinable()) {
+                    // 析构时优先使用join()，避免detach()导致的内存安全问题
+                    try {
+                        thread->join();
+                    } catch (...) {
+                        // 只有在join失败时才使用detach作为最后手段
+                        thread->detach();
+                    }
+                }
+            } catch (...) {
+                // 忽略析构时的异常
+            }
+        }
+    }
 }
 
 } // namespace client

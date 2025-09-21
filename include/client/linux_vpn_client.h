@@ -28,6 +28,32 @@ class LinuxTunInterface;
  */
 class LinuxVPNClient : public common::VPNClientInterface {
 public:
+    /**
+     * @brief Linux特定的连接配置结构（扩展基类配置）
+     */
+    struct LinuxConnectionConfig : public ConnectionConfig {
+        std::string client_certificate_path;
+        std::string client_private_key_path;
+        std::string ca_certificate_path;
+        
+        // 重写默认值以匹配Linux客户端需求
+        LinuxConnectionConfig() {
+            keepalive_interval = 1; // 秒（缩短心跳周期提高清理效率）
+            connection_timeout = 10; // 秒
+            auto_reconnect = true;
+            max_reconnect_attempts = 5;
+        }
+    };
+
+    /**
+     * @brief Linux特定的连接统计信息（扩展基类统计）
+     */
+    struct LinuxConnectionStats : public ConnectionStats {
+        uint32_t reconnect_count = 0;
+        std::string last_error;
+    };
+
+public:
     LinuxVPNClient();
     virtual ~LinuxVPNClient();
 
@@ -45,6 +71,9 @@ public:
     bool testInterface() override;
     std::string getVirtualIP() const override;
     std::string getServerIP() const override;
+    
+    // Linux特定的连接方法
+    bool connect(const LinuxConnectionConfig& config);
 
     /**
      * @brief 设置日志回调
@@ -63,6 +92,7 @@ private:
     void networkReaderThreadFunc();
     void networkWriterThreadFunc();
     void keepaliveThreadFunc();
+    void reconnectThreadFunc();
     
     // 数据包处理
     bool processTunPacket(const uint8_t* data, size_t length);
@@ -82,6 +112,13 @@ private:
     // 保活机制
     bool sendKeepalive();
     
+    // 自动重连
+    void startReconnectThread();
+    void stopReconnectThread();
+    
+    // 线程管理
+    void waitForThreadsToFinish();
+    
     // 状态管理
     void setState(ConnectionState new_state);
     void logMessage(const std::string& message);
@@ -91,7 +128,7 @@ private:
 
 private:
     // 配置
-    ConnectionConfig config_;
+    LinuxConnectionConfig config_;
     
     // 连接状态
     std::atomic<ConnectionState> connection_state_{ConnectionState::DISCONNECTED};
@@ -117,6 +154,7 @@ private:
     std::thread network_reader_thread_;
     std::thread network_writer_thread_;
     std::thread keepalive_thread_;
+    std::thread reconnect_thread_;
     
     // 数据队列
     std::queue<std::vector<uint8_t>> outbound_queue_;
@@ -125,7 +163,7 @@ private:
     
     // 统计信息
     mutable std::mutex stats_mutex_;
-    ConnectionStats stats_;
+    LinuxConnectionStats stats_;
     
     // 错误信息
     mutable std::mutex error_mutex_;
