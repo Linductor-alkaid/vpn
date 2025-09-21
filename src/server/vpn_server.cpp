@@ -614,19 +614,30 @@ void VPNServer::handleDataPacket(SessionPtr session, const common::SecureMessage
     // 获取解密后的数据包
     auto payload = message->getPayload();
     if (payload.first && payload.second > 0) {
+        std::cout << "handleDataPacket: Received " << payload.second << " bytes from client " 
+                  << session->getClientId() << std::endl;
+        
         // 使用路由器处理数据包
         if (packet_router_) {
             auto routing_result = packet_router_->routePacket(payload.first, payload.second);
             
+            std::cout << "Client-to-client routing: action=" << static_cast<int>(routing_result.action) 
+                      << ", reason=" << routing_result.reason << std::endl;
+            
             switch (routing_result.action) {
                 case PacketRouter::RoutingResult::TO_CLIENT:
                     if (routing_result.target_session) {
+                        std::cout << "Forwarding packet from client " << session->getClientId() 
+                                  << " to client " << routing_result.target_client << std::endl;
                         // 转发到目标客户端（需要重新加密）
                         forwardPacketToClient(routing_result.target_session, payload.first, payload.second);
+                    } else {
+                        std::cout << "Target session not found for client " << routing_result.target_client << std::endl;
                     }
                     break;
                     
                 case PacketRouter::RoutingResult::TO_TUN:
+                    std::cout << "Forwarding packet from client " << session->getClientId() << " to TUN interface" << std::endl;
                     // 写入TUN接口
                     if (tun_interface_) {
                         tun_interface_->writePacket(payload.first, payload.second);
@@ -634,15 +645,18 @@ void VPNServer::handleDataPacket(SessionPtr session, const common::SecureMessage
                     break;
                     
                 case PacketRouter::RoutingResult::BROADCAST:
+                    std::cout << "Broadcasting packet from client " << session->getClientId() << " to all clients" << std::endl;
                     // 广播到所有客户端
                     broadcastEncryptedPacket(payload.first, payload.second, session->getClientId());
                     break;
                     
                 case PacketRouter::RoutingResult::DROP:
                 default:
-                    // 丢弃数据包
+                    std::cout << "Dropping packet from client " << session->getClientId() << ": " << routing_result.reason << std::endl;
                     break;
             }
+        } else {
+            std::cout << "No packet router available for client " << session->getClientId() << std::endl;
         }
     }
 }

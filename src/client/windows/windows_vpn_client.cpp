@@ -264,11 +264,8 @@ void WindowsVPNClient::connectionThreadFunc() {
             return;
         }
         
-        // 6. 设置隧道
-        if (!setupTunnel()) {
-            setState(ConnectionState::DISCONNECTED);
-            return;
-        }
+        // 6. 隧道设置将在认证成功后进行
+        // 这里只是初始化TAP适配器，不设置IP地址
         
         // 7. 设置连接状态为CONNECTED
         setState(ConnectionState::CONNECTED);
@@ -678,13 +675,21 @@ bool WindowsVPNClient::processNetworkPacket(const uint8_t* data, size_t length) 
                             {
                                 std::lock_guard<std::mutex> lock(virtual_ip_mutex_);
                                 assigned_virtual_ip_ = virtual_ip;
+                                config_.virtual_ip = virtual_ip;  // 同步到配置中
                             }
                             logMessage("Assigned virtual IP: " + virtual_ip);
+                            
+                            // 现在设置TAP适配器IP地址
+                            if (!setupTunnel()) {
+                                setState(ConnectionState::ERROR_STATE);
+                                setLastError("Failed to setup tunnel after authentication");
+                                return true; // 返回true因为消息处理成功，但连接失败
+                            }
                         }
                     }
                     
                     setState(ConnectionState::CONNECTED);
-                    logMessage("Authentication successful");
+                    logMessage("Authentication successful and tunnel configured");
                 } else {
                     setState(ConnectionState::ERROR_STATE);
                     setLastError("Authentication failed");
@@ -697,11 +702,18 @@ bool WindowsVPNClient::processNetworkPacket(const uint8_t* data, size_t length) 
                 // 处理数据包
                 auto payload = message->getPayload();
                 if (payload.first && payload.second > 0) {
+                    logMessage("Received DATA_PACKET: " + std::to_string(payload.second) + " bytes");
+                    
                     // 写入TAP适配器
                     DWORD bytes_written;
                     if (tap_interface_->writePacket(payload.first, payload.second, &bytes_written)) {
+                        logMessage("Successfully wrote " + std::to_string(bytes_written) + " bytes to TAP adapter");
                         updateStats(0, 0, 0, 1);
+                    } else {
+                        logMessage("Failed to write packet to TAP adapter: " + tap_interface_->getLastError());
                     }
+                } else {
+                    logMessage("Received empty DATA_PACKET");
                 }
             }
             break;
