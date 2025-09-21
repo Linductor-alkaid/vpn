@@ -80,7 +80,7 @@ bool LinuxVPNClient::connect(const LinuxConnectionConfig& config) {
         // 调用标准的disconnect方法，确保完全清理
         disconnect();
         
-        // 确保所有线程对象都已清理
+        // 确保所有线程对象都已清理 - 参考Windows客户端实现
         if (connection_thread_.joinable()) connection_thread_.detach();
         if (tun_reader_thread_.joinable()) tun_reader_thread_.detach();
         if (network_reader_thread_.joinable()) network_reader_thread_.detach();
@@ -151,38 +151,8 @@ void LinuxVPNClient::disconnect() {
     // 关闭网络资源（这会中断阻塞的网络调用）
     closeSocket();
     
-    // 尝试优雅地等待线程结束
-    const auto cleanup_timeout = std::chrono::seconds(3);
-    
-    std::vector<std::thread*> threads = {
-        &tun_reader_thread_,
-        &network_reader_thread_, 
-        &network_writer_thread_,
-        &keepalive_thread_,
-        &reconnect_thread_
-    };
-    
-    // 等待线程结束
-    for (auto* thread : threads) {
-        if (thread->joinable()) {
-            try {
-                // 给每个线程最多200ms时间结束
-                auto thread_start = std::chrono::steady_clock::now();
-                while (thread->joinable() && 
-                       std::chrono::steady_clock::now() - thread_start < std::chrono::milliseconds(200)) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                }
-                
-                if (thread->joinable()) {
-                    // 使用detach()来避免长时间阻塞，但确保线程能安全结束
-                    thread->detach();
-                    logMessage("Thread detached due to timeout");
-                }
-            } catch (...) {
-                logMessage("Exception during thread cleanup");
-            }
-        }
-    }
+    // 使用统一的线程清理方法
+    waitForThreadsToFinish();
     
     // 关闭TUN接口
     if (tun_interface_) {
@@ -261,6 +231,12 @@ std::string LinuxVPNClient::getServerIP() const {
 
 void LinuxVPNClient::connectionThreadFunc() {
     try {
+        // 检查对象状态，确保在有效状态下继续
+        if (should_stop_.load()) {
+            setState(ConnectionState::DISCONNECTED);
+            return;
+        }
+        
         logMessage("Starting VPN connection to " + config_.server_address + ":" + std::to_string(config_.server_port));
         
         // 1. 创建网络套接字
@@ -275,6 +251,12 @@ void LinuxVPNClient::connectionThreadFunc() {
         }
         if (network_writer_thread_.joinable()) {
             network_writer_thread_.detach();
+        }
+        
+        // 再次检查状态
+        if (should_stop_.load()) {
+            setState(ConnectionState::DISCONNECTED);
+            return;
         }
         
         // 启动网络读取线程（需要在握手前启动以接收响应）
@@ -344,74 +326,8 @@ void LinuxVPNClient::connectionThreadFunc() {
         logMessage("Unknown exception in connection thread");
     }
     
-    // 确保在线程结束时进行清理
-    try {
-        // 设置停止标志
-        should_stop_.store(true);
-        
-        // 通知所有等待的线程
-        outbound_queue_cv_.notify_all();
-        
-        // 关闭网络资源
-        closeSocket();
-        if (tun_interface_) {
-            tun_interface_->closeInterface();
-        }
-        
-        // 等待网络线程结束（它们是在这个连接线程中启动的）
-        if (network_reader_thread_.joinable()) {
-            try {
-                network_reader_thread_.join();
-                logMessage("Network reader thread joined");
-            } catch (...) {
-                logMessage("Exception joining network reader thread");
-            }
-        }
-        
-        if (network_writer_thread_.joinable()) {
-            try {
-                network_writer_thread_.join();
-                logMessage("Network writer thread joined");
-            } catch (...) {
-                logMessage("Exception joining network writer thread");
-            }
-        }
-        
-        if (tun_reader_thread_.joinable()) {
-            try {
-                tun_reader_thread_.join();
-                logMessage("TUN reader thread joined");
-            } catch (...) {
-                logMessage("Exception joining TUN reader thread");
-            }
-        }
-        
-        if (keepalive_thread_.joinable()) {
-            try {
-                keepalive_thread_.join();
-                logMessage("Keepalive thread joined");
-            } catch (...) {
-                logMessage("Exception joining keepalive thread");
-            }
-        }
-        
-        // 清理队列
-        {
-            std::lock_guard<std::mutex> queue_lock(outbound_queue_mutex_);
-            while (!outbound_queue_.empty()) {
-                outbound_queue_.pop();
-            }
-        }
-        
-        // 重置安全上下文
-        secure_context_.reset();
-        
-        // 确保状态为DISCONNECTED
-        setState(ConnectionState::DISCONNECTED);
-        logMessage("Connection thread cleanup completed");
-        
-    } catch (...) {
-        // 忽略清理时的异常
+    // 确保在线程结束时状态为DISCONNECTED
+    if (connection_state_.load() != ConnectionState::DISCONNECTED) {
         setState(ConnectionState::DISCONNECTED);
     }
 }
@@ -1124,27 +1040,45 @@ LinuxVPNClient::BandwidthTestResult LinuxVPNClient::performBandwidthTest(uint32_
 }
 
 void LinuxVPNClient::setState(ConnectionState new_state) {
-    connection_state_.store(new_state);
-    
-    std::string state_str;
-    switch (new_state) {
-        case ConnectionState::DISCONNECTED: state_str = "DISCONNECTED"; break;
-        case ConnectionState::CONNECTING: state_str = "CONNECTING"; break;
-        case ConnectionState::AUTHENTICATING: state_str = "AUTHENTICATING"; break;
-        case ConnectionState::CONNECTED: state_str = "CONNECTED"; break;
-        case ConnectionState::DISCONNECTING: state_str = "DISCONNECTING"; break;
-        case ConnectionState::ERROR_STATE: state_str = "ERROR"; break;
+    try {
+        connection_state_.store(new_state);
+        
+        std::string state_str;
+        switch (new_state) {
+            case ConnectionState::DISCONNECTED: state_str = "DISCONNECTED"; break;
+            case ConnectionState::CONNECTING: state_str = "CONNECTING"; break;
+            case ConnectionState::AUTHENTICATING: state_str = "AUTHENTICATING"; break;
+            case ConnectionState::CONNECTED: state_str = "CONNECTED"; break;
+            case ConnectionState::DISCONNECTING: state_str = "DISCONNECTING"; break;
+            case ConnectionState::ERROR_STATE: state_str = "ERROR"; break;
+        }
+        
+        logMessage("Connection state changed to: " + state_str);
+    } catch (...) {
+        // 如果setState失败，至少确保状态被设置
+        try {
+            connection_state_.store(new_state);
+        } catch (...) {
+            // 如果连原子操作都失败，忽略
+        }
     }
-    
-    logMessage("Connection state changed to: " + state_str);
 }
 
 void LinuxVPNClient::logMessage(const std::string& message) {
-    std::lock_guard<std::mutex> lock(log_mutex_);
-    if (log_callback_) {
-        log_callback_(message);
-    } else {
-        std::cout << "[LinuxVPNClient] " << message << std::endl;
+    try {
+        std::lock_guard<std::mutex> lock(log_mutex_);
+        if (log_callback_) {
+            log_callback_(message);
+        } else {
+            std::cout << "[LinuxVPNClient] " << message << std::endl;
+        }
+    } catch (...) {
+        // 在日志记录中发生异常时，使用简单的输出避免崩溃
+        try {
+            std::cout << "[LinuxVPNClient] " << message << std::endl;
+        } catch (...) {
+            // 如果连cout都失败，忽略日志记录
+        }
     }
 }
 
@@ -1180,69 +1114,76 @@ void LinuxVPNClient::stopReconnectThread() {
 void LinuxVPNClient::reconnectThreadFunc() {
     logMessage("Reconnect thread started");
     
-    uint32_t reconnect_attempts = 0;
-    const uint32_t max_attempts = config_.max_reconnect_attempts;
-    const auto reconnect_delay = std::chrono::seconds(5); // 5秒重连延迟
-    
-    while (!should_stop_.load() && reconnect_attempts < max_attempts) {
-        // 等待连接错误状态
-        if (connection_state_.load() == ConnectionState::ERROR_STATE) {
-            reconnect_attempts++;
-            
-            logMessage("Attempting reconnection " + std::to_string(reconnect_attempts) + 
-                      "/" + std::to_string(max_attempts));
-            
-            // 等待一段时间后尝试重连
-            std::this_thread::sleep_for(reconnect_delay);
-            
-            if (should_stop_.load()) {
-                break;
-            }
-            
-            // 尝试重新连接
-            if (connect(config_)) {
-                logMessage("Reconnection successful");
-                reconnect_attempts = 0; // 重置重连计数
+    try {
+        uint32_t reconnect_attempts = 0;
+        const uint32_t max_attempts = config_.max_reconnect_attempts;
+        const auto reconnect_delay = std::chrono::seconds(5); // 5秒重连延迟
+        
+        while (!should_stop_.load() && reconnect_attempts < max_attempts) {
+            // 等待连接错误状态
+            if (connection_state_.load() == ConnectionState::ERROR_STATE) {
+                reconnect_attempts++;
                 
-                // 更新统计信息
-                {
-                    std::lock_guard<std::mutex> lock(stats_mutex_);
-                    stats_.reconnect_count++;
+                logMessage("Attempting reconnection " + std::to_string(reconnect_attempts) + 
+                          "/" + std::to_string(max_attempts));
+                
+                // 等待一段时间后尝试重连
+                std::this_thread::sleep_for(reconnect_delay);
+                
+                if (should_stop_.load()) {
+                    break;
                 }
                 
-                // 等待连接建立或失败
-                auto start_time = std::chrono::steady_clock::now();
-                const auto timeout = std::chrono::seconds(30);
-                
-                while (std::chrono::steady_clock::now() - start_time < timeout) {
-                    auto state = connection_state_.load();
+                // 尝试重新连接 - 使用Linux特定的connect方法避免递归
+                if (connect(static_cast<LinuxConnectionConfig>(config_))) {
+                    logMessage("Reconnection successful");
+                    reconnect_attempts = 0; // 重置重连计数
                     
-                    if (state == ConnectionState::CONNECTED) {
-                        logMessage("Reconnection completed successfully");
-                        break;
-                    } else if (state == ConnectionState::ERROR_STATE) {
-                        logMessage("Reconnection failed");
-                        break;
+                    // 更新统计信息
+                    {
+                        std::lock_guard<std::mutex> lock(stats_mutex_);
+                        stats_.reconnect_count++;
                     }
                     
-                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                    // 等待连接建立或失败
+                    auto start_time = std::chrono::steady_clock::now();
+                    const auto timeout = std::chrono::seconds(30);
+                    
+                    while (std::chrono::steady_clock::now() - start_time < timeout) {
+                        auto state = connection_state_.load();
+                        
+                        if (state == ConnectionState::CONNECTED) {
+                            logMessage("Reconnection completed successfully");
+                            break;
+                        } else if (state == ConnectionState::ERROR_STATE) {
+                            logMessage("Reconnection failed");
+                            break;
+                        }
+                        
+                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                    }
+                } else {
+                    logMessage("Failed to initiate reconnection");
                 }
             } else {
-                logMessage("Failed to initiate reconnection");
+                // 如果连接正常，重置重连计数
+                if (connection_state_.load() == ConnectionState::CONNECTED) {
+                    reconnect_attempts = 0;
+                }
+                
+                std::this_thread::sleep_for(std::chrono::seconds(1));
             }
-        } else {
-            // 如果连接正常，重置重连计数
-            if (connection_state_.load() == ConnectionState::CONNECTED) {
-                reconnect_attempts = 0;
-            }
-            
-            std::this_thread::sleep_for(std::chrono::seconds(1));
         }
-    }
-    
-    if (reconnect_attempts >= max_attempts) {
-        logMessage("Maximum reconnection attempts reached, giving up");
-        setLastError("Maximum reconnection attempts reached");
+        
+        if (reconnect_attempts >= max_attempts) {
+            logMessage("Maximum reconnection attempts reached, giving up");
+            setLastError("Maximum reconnection attempts reached");
+        }
+        
+    } catch (const std::exception& e) {
+        logMessage("Exception in reconnect thread: " + std::string(e.what()));
+    } catch (...) {
+        logMessage("Unknown exception in reconnect thread");
     }
     
     logMessage("Reconnect thread stopped");
@@ -1281,40 +1222,60 @@ bool LinuxVPNClientManager::isTunModuleAvailable() {
 }
 
 void LinuxVPNClient::waitForThreadsToFinish() {
-    // 等待线程结束（析构时给较短的时间）
-    const auto cleanup_timeout = std::chrono::milliseconds(1000); // 1秒
-    
-    std::vector<std::thread*> threads = {
-        &connection_thread_,
-        &tun_reader_thread_,
-        &network_reader_thread_, 
-        &network_writer_thread_,
-        &keepalive_thread_,
-        &reconnect_thread_
-    };
-    
-    for (auto* thread : threads) {
-        if (thread->joinable()) {
+    // 安全地等待所有线程结束 - 参考Windows客户端的实现
+    auto wait_for_thread = [this](std::thread& t, const std::string& name, int timeout_ms = 1000) {
+        if (t.joinable()) {
             try {
-                auto thread_start = std::chrono::steady_clock::now();
-                while (thread->joinable() && 
-                       std::chrono::steady_clock::now() - thread_start < std::chrono::milliseconds(200)) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                // 在析构时减少日志输出
+                bool is_destructor = (connection_state_.load() == ConnectionState::DISCONNECTED);
+                if (!is_destructor) {
+                    logMessage("Waiting for " + name + " thread to finish...");
                 }
                 
-                if (thread->joinable()) {
-                    // 析构时优先使用join()，避免detach()导致的内存安全问题
-                    try {
-                        thread->join();
-                    } catch (...) {
-                        // 只有在join失败时才使用detach作为最后手段
-                        thread->detach();
+                // 使用更简单的等待机制，避免future可能的问题
+                auto start_time = std::chrono::steady_clock::now();
+                while (t.joinable() && 
+                       std::chrono::steady_clock::now() - start_time < std::chrono::milliseconds(timeout_ms)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+                
+                if (t.joinable()) {
+                    // 超时后直接detach，避免阻塞
+                    if (!is_destructor) {
+                        logMessage("Warning: " + name + " thread timeout, detaching...");
                     }
+                    t.detach();
+                } else if (!is_destructor) {
+                    logMessage(name + " thread finished successfully");
+                }
+            } catch (const std::exception& e) {
+                if (connection_state_.load() != ConnectionState::DISCONNECTED) {
+                    logMessage("Exception waiting for " + name + " thread: " + e.what());
+                }
+                if (t.joinable()) {
+                    t.detach();
                 }
             } catch (...) {
-                // 忽略析构时的异常
+                // 静默处理析构时的异常
+                if (t.joinable()) {
+                    t.detach();
+                }
             }
         }
+    };
+    
+    // 等待各个线程结束，析构时使用更短的超时时间
+    int timeout = (connection_state_.load() == ConnectionState::DISCONNECTED) ? 200 : 500;
+    
+    wait_for_thread(tun_reader_thread_, "tun_reader", timeout);
+    wait_for_thread(network_reader_thread_, "network_reader", timeout);
+    wait_for_thread(network_writer_thread_, "network_writer", timeout);
+    wait_for_thread(keepalive_thread_, "keepalive", timeout);
+    wait_for_thread(reconnect_thread_, "reconnect", timeout);
+    wait_for_thread(connection_thread_, "connection", timeout * 2);
+    
+    if (connection_state_.load() != ConnectionState::DISCONNECTED) {
+        logMessage("All threads cleanup completed");
     }
 }
 
