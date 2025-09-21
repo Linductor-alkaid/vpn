@@ -117,7 +117,7 @@ else()
     message(WARNING "✗ Asio 未找到")
 endif()
 
-# libsodium库 - 不再支持 third_party 方式，请使用系统安装或 vcpkg
+# libsodium库 - 现代加密库，不再支持 third_party 方式
 # 详细安装说明请参阅: docs/libsodium-installation.md
 
 # 优先尝试 vcpkg 安装的 libsodium（Windows 推荐）
@@ -135,10 +135,16 @@ else()
             list(APPEND THIRD_PARTY_LIBRARIES ${SODIUM_LIBRARIES})
             list(APPEND THIRD_PARTY_INCLUDE_DIRS ${SODIUM_INCLUDE_DIRS})
         else()
-            message(FATAL_ERROR "✗ libsodium 未找到！请参阅 docs/libsodium-installation.md 获取安装说明")
+            message(WARNING "✗ libsodium 未找到！")
+            message(WARNING "   Windows: vcpkg install libsodium")
+            message(WARNING "   Linux:   sudo apt install libsodium-dev")
+            message(WARNING "   详见: docs/libsodium-installation.md")
         endif()
     else()
-        message(FATAL_ERROR "✗ libsodium 未找到！请参阅 docs/libsodium-installation.md 获取安装说明")
+        message(WARNING "✗ libsodium 未找到！")
+        message(WARNING "   Windows: vcpkg install libsodium")
+        message(WARNING "   Linux:   sudo apt install libsodium-dev")
+        message(WARNING "   详见: docs/libsodium-installation.md")
     endif()
 endif()
 
