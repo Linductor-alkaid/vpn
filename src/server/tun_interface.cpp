@@ -99,9 +99,16 @@ bool TunTapInterface::setIPAddress(const std::string& ip_address, const std::str
         return false;
     }
     
+    // Convert netmask to CIDR format
+    int cidr = netmaskToCIDR(netmask);
+    if (cidr < 0) {
+        std::cerr << "Invalid netmask: " << netmask << std::endl;
+        return false;
+    }
+    
     // Construct command to set IP address
     std::stringstream cmd;
-    cmd << "ip addr add " << ip_address << "/" << netmask 
+    cmd << "ip addr add " << ip_address << "/" << cidr 
         << " dev " << interface_name_;
     
     if (!executeCommand(cmd.str())) {
@@ -299,6 +306,33 @@ void TunTapInterface::updateStats(size_t rx_bytes, size_t tx_bytes) {
         stats_.tx_packets++;
         stats_.tx_bytes += tx_bytes;
     }
+}
+
+int TunTapInterface::netmaskToCIDR(const std::string& netmask) {
+    struct in_addr addr;
+    if (inet_aton(netmask.c_str(), &addr) == 0) {
+        return -1;
+    }
+    
+    uint32_t mask = ntohl(addr.s_addr);
+    int cidr = 0;
+    
+    // Count the number of consecutive 1 bits from the left
+    for (int i = 31; i >= 0; i--) {
+        if (mask & (1U << i)) {
+            cidr++;
+        } else {
+            break;
+        }
+    }
+    
+    // Verify it's a valid netmask (no gaps in 1 bits)
+    uint32_t expected_mask = (0xFFFFFFFF << (32 - cidr)) & 0xFFFFFFFF;
+    if (mask != expected_mask) {
+        return -1;
+    }
+    
+    return cidr;
 }
 
 } // namespace server

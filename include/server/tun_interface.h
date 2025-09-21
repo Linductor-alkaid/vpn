@@ -173,6 +173,13 @@ private:
      * @param tx_bytes 发送字节数
      */
     void updateStats(size_t rx_bytes, size_t tx_bytes);
+    
+    /**
+     * @brief 将子网掩码转换为CIDR格式
+     * @param netmask 子网掩码（如"255.255.255.0"）
+     * @return CIDR值（如24），失败返回-1
+     */
+    int netmaskToCIDR(const std::string& netmask);
 
 private:
     int fd_;                        // 文件描述符

@@ -149,7 +149,7 @@ bool VPNServer::start(const ServerConfig& config) {
         return false;
     }
     
-    packet_router_->setDebugMode(config.isDebugMode());
+    packet_router_->setDebugMode(true);  // 临时启用调试模式
     
     // Initialize IP address pool
     if (!initializeIPPool()) {
@@ -808,29 +808,39 @@ void VPNServer::broadcastEncryptedPacket(const uint8_t* data, size_t length, Cli
 }
 
 void VPNServer::handleTunPacket(const uint8_t* data, size_t length) {
+    std::cout << "handleTunPacket called with " << length << " bytes" << std::endl;
+    
     if (!packet_router_) {
+        std::cout << "No packet router available" << std::endl;
         return;
     }
     
     // Use router to process packets from TUN interface
     auto routing_result = packet_router_->routePacket(data, length);
     
+    std::cout << "Routing result: action=" << static_cast<int>(routing_result.action) 
+              << ", reason=" << routing_result.reason << std::endl;
+    
     switch (routing_result.action) {
         case PacketRouter::RoutingResult::TO_CLIENT:
             if (routing_result.target_session) {
+                std::cout << "Forwarding packet to client " << routing_result.target_client << std::endl;
                 // Send to specific client - forward encrypted packet
                 forwardPacketToClient(routing_result.target_session, data, length);
+            } else {
+                std::cout << "No target session found for client " << routing_result.target_client << std::endl;
             }
             break;
             
         case PacketRouter::RoutingResult::BROADCAST:
+            std::cout << "Broadcasting packet to all clients" << std::endl;
             // Broadcast to all clients
             broadcastEncryptedPacket(data, length);
             break;
             
         case PacketRouter::RoutingResult::DROP:
         default:
-            // Drop packet
+            std::cout << "Dropping packet: " << routing_result.reason << std::endl;
             break;
     }
 }
