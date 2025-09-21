@@ -551,9 +551,21 @@ void VPNServer::handleAuthRequest(SessionPtr session, const common::SecureMessag
                 return;
             }
             session->assignVirtualIP(virtual_ip);
+            
+            // 将客户端路由添加到路由器
+            if (packet_router_) {
+                packet_router_->addClientRoute(session->getClientId(), virtual_ip, session);
+                std::cout << "Added client route: " << virtual_ip << " -> client " << session->getClientId() << std::endl;
+            }
         } else {
             // 重用现有IP，需要确保IP仍然被分配给该客户端
             std::cout << "Reusing existing virtual IP: " << virtual_ip << " for client " << session->getClientId() << std::endl;
+            
+            // 确保路由存在
+            if (packet_router_) {
+                packet_router_->addClientRoute(session->getClientId(), virtual_ip, session);
+                std::cout << "Re-added client route: " << virtual_ip << " -> client " << session->getClientId() << std::endl;
+            }
         }
         
         // 创建认证响应
