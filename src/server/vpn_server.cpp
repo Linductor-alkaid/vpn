@@ -116,12 +116,21 @@ bool VPNServer::start(const ServerConfig& config) {
         return false;
     }
     
-    // Configure TUN interface
-    if (!tun_interface_->setIPAddress(config.getVirtualNetwork(), config.getVirtualNetmask())) {
-        std::cerr << "Failed to set TUN interface IP address" << std::endl;
+    // Configure TUN interface - set server IP as gateway (.1)
+    std::string server_ip = config.getVirtualNetwork();
+    // Convert network address to gateway address (change last octet to 1)
+    size_t last_dot = server_ip.find_last_of('.');
+    if (last_dot != std::string::npos) {
+        server_ip = server_ip.substr(0, last_dot + 1) + "1";
+    }
+    
+    if (!tun_interface_->setIPAddress(server_ip, config.getVirtualNetmask())) {
+        std::cerr << "Failed to set TUN interface IP address to " << server_ip << std::endl;
         closeSocket();
         return false;
     }
+    
+    std::cout << "TUN interface configured with IP: " << server_ip << "/" << config.getVirtualNetmask() << std::endl;
     
     if (!tun_interface_->bringUp()) {
         std::cerr << "Failed to bring up TUN interface" << std::endl;
@@ -809,14 +818,14 @@ void VPNServer::handleTunPacket(const uint8_t* data, size_t length) {
     switch (routing_result.action) {
         case PacketRouter::RoutingResult::TO_CLIENT:
             if (routing_result.target_session) {
-            // Send to specific client
-            // Need to implement encryption and UDP sending logic here
+                // Send to specific client - forward encrypted packet
+                forwardPacketToClient(routing_result.target_session, data, length);
             }
             break;
             
         case PacketRouter::RoutingResult::BROADCAST:
             // Broadcast to all clients
-            broadcastPacket(data, length);
+            broadcastEncryptedPacket(data, length);
             break;
             
         case PacketRouter::RoutingResult::DROP:
