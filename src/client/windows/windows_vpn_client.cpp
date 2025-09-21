@@ -421,11 +421,13 @@ bool WindowsVPNClient::authenticateWithServer() {
 bool WindowsVPNClient::setupTunnel() {
     logMessage("Setting up tunnel interface");
     
-    // 设置TAP适配器IP地址
+    // 设置TAP适配器IP地址 - 使用标准掩码但配置精确路由
     if (!tap_interface_->setIPAddress(config_.virtual_ip, config_.virtual_netmask)) {
         setLastError("Failed to set TAP adapter IP address: " + tap_interface_->getLastError());
         return false;
     }
+    
+    logMessage("TAP adapter configured with IP: " + config_.virtual_ip + "/" + config_.virtual_netmask);
     
     // 激活TAP适配器
     if (!tap_interface_->setAdapterStatus(true)) {
@@ -433,7 +435,42 @@ bool WindowsVPNClient::setupTunnel() {
         return false;
     }
     
+    // 添加服务端特定路由 - 只为服务端IP添加路由，不是整个网段
+    std::string server_ip = "10.8.0.1";  // 服务端IP
+    std::string host_mask = "255.255.255.255";  // 主机路由
+    if (!tap_interface_->addRoute(server_ip, host_mask)) {
+        logMessage("Warning: Failed to add server route: " + tap_interface_->getLastError());
+        // 不返回失败，因为路由可能已经存在
+    }
+    
+    // 添加服务端ARP表项 - 为TAP环境中的以太网通信
+    if (!addServerArpEntry(server_ip)) {
+        logMessage("Warning: Failed to add server ARP entry");
+        // 不返回失败，ARP可能会自动解析
+    }
+    
     logMessage("Tunnel interface configured successfully");
+    return true;
+}
+
+bool WindowsVPNClient::addServerArpEntry(const std::string& server_ip) {
+    // 为服务端IP添加静态ARP表项，使用虚拟MAC地址
+    std::string virtual_mac = "02-00-00-00-00-01";  // 虚拟MAC地址
+    
+    // 构建arp命令
+    std::ostringstream cmd;
+    cmd << "arp -s " << server_ip << " " << virtual_mac;
+    
+    std::string command = cmd.str();
+    logMessage("Adding ARP entry: " + command);
+    
+    int result = system(command.c_str());
+    if (result != 0) {
+        logMessage("Failed to add ARP entry (may need admin privileges): " + command);
+        return false;
+    }
+    
+    logMessage("Added ARP entry: " + server_ip + " -> " + virtual_mac);
     return true;
 }
 
@@ -443,13 +480,59 @@ void WindowsVPNClient::tapReaderThreadFunc() {
     uint8_t buffer[TAP_BUFFER_SIZE];
     DWORD bytes_read;
     
+    logMessage("[TAP Reader] Starting read loop...");
+    int ping_packets = 0;
+    int other_packets = 0;
+    
     while (!should_stop_.load() && connection_state_.load() == ConnectionState::CONNECTED) {
         if (tap_interface_->readPacket(buffer, sizeof(buffer), &bytes_read)) {
             if (bytes_read > 0) {
-                processTapPacket(buffer, bytes_read);
+                // 检查是否是ping包（ICMP Echo Request）
+                bool is_ping_packet = false;
+                if (bytes_read >= 42) {  // 最小以太网帧 + IP头 + ICMP头
+                    const uint8_t* ip_header = buffer + 14;  // 跳过以太网头部
+                    if ((ip_header[0] & 0xF0) == 0x40 &&  // IPv4
+                        ip_header[9] == 1) {  // ICMP协议
+                        uint8_t ip_header_len = (ip_header[0] & 0x0F) * 4;
+                        if (bytes_read >= 14 + ip_header_len + 8) {  // 确保有完整的ICMP头
+                            const uint8_t* icmp_header = ip_header + ip_header_len;
+                            if (icmp_header[0] == 8) {  // ICMP Echo Request
+                                is_ping_packet = true;
+                            }
+                        }
+                    }
+                }
+                
+                if (is_ping_packet) {
+                    ping_packets++;
+                    logMessage("[TAP Reader] Read ping packet: " + std::to_string(bytes_read) + " bytes (ping count: " + std::to_string(ping_packets) + ")");
+                    
+                    if (handlePingPacket(buffer, bytes_read)) {
+                        logMessage("[TAP Reader] Successfully handled ping packet");
+                    } else {
+                        logMessage("[TAP Reader] Failed to handle ping packet");
+                    }
+                } else {
+                    // 处理其他数据包
+                    other_packets++;
+                    if (other_packets % 50 == 0) {  // 每50个包记录一次
+                        logMessage("[TAP Reader] Processing other packet: " + std::to_string(bytes_read) + " bytes (processed: " + std::to_string(other_packets) + ")");
+                    }
+                    
+                    if (processTapPacket(buffer, bytes_read)) {
+                        // 数据包已发送到服务器
+                    } else {
+                        logMessage("[TAP Reader] Failed to process data packet");
+                    }
+                }
             }
         } else {
             // 读取失败，可能是适配器断开
+            static int read_failure_count = 0;
+            read_failure_count++;
+            if (read_failure_count % 1000 == 0) {
+                logMessage("[TAP Reader] TAP read failed " + std::to_string(read_failure_count) + " times");
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
@@ -551,7 +634,12 @@ void WindowsVPNClient::networkWriterThreadFunc() {
             outbound_queue_.pop();
             lock.unlock();
             
-            sendToServer(packet.data(), packet.size());
+            logMessage("[Network Writer] Sending " + std::to_string(packet.size()) + " bytes to server");
+            if (sendToServer(packet.data(), packet.size())) {
+                logMessage("[Network Writer] Successfully sent packet to server");
+            } else {
+                logMessage("[Network Writer] Failed to send packet to server: " + getLastError());
+            }
             
             lock.lock();
         }
@@ -704,6 +792,21 @@ bool WindowsVPNClient::processNetworkPacket(const uint8_t* data, size_t length) 
                 if (payload.first && payload.second > 0) {
                     logMessage("Received DATA_PACKET: " + std::to_string(payload.second) + " bytes");
                     
+                    // 检查是否是ping回复包并处理
+                    if (payload.second >= 42) {  // 最小以太网帧大小
+                        const uint8_t* ip_header = payload.first + 14;  // 跳过以太网头部
+                        if ((ip_header[0] & 0xF0) == 0x40 &&  // IPv4
+                            ip_header[9] == 1) {  // ICMP协议
+                            uint8_t ip_header_len = (ip_header[0] & 0x0F) * 4;
+                            if (payload.second >= 14 + ip_header_len + 8) {  // 确保有完整的ICMP头
+                                const uint8_t* icmp_header = ip_header + ip_header_len;
+                                if (icmp_header[0] == 0) {  // ICMP Echo Reply
+                                    logMessage("Received ping reply packet, writing to TAP interface");
+                                }
+                            }
+                        }
+                    }
+                    
                     // 写入TAP适配器
                     DWORD bytes_written;
                     if (tap_interface_->writePacket(payload.first, payload.second, &bytes_written)) {
@@ -752,6 +855,26 @@ bool WindowsVPNClient::createSocket() {
         return false;
     }
     
+    // 绑定到本地端口（让系统自动选择端口）
+    struct sockaddr_in local_addr;
+    memset(&local_addr, 0, sizeof(local_addr));
+    local_addr.sin_family = AF_INET;
+    local_addr.sin_addr.s_addr = INADDR_ANY;
+    local_addr.sin_port = 0; // 让系统自动选择端口
+    
+    if (bind(udp_socket_, reinterpret_cast<struct sockaddr*>(&local_addr), sizeof(local_addr)) == SOCKET_ERROR) {
+        setLastError("Failed to bind UDP socket: " + std::to_string(WSAGetLastError()));
+        closesocket(udp_socket_);
+        udp_socket_ = INVALID_SOCKET;
+        return false;
+    }
+    
+    // 获取实际绑定的端口号（用于日志）
+    int addr_len = sizeof(local_addr);
+    if (getsockname(udp_socket_, reinterpret_cast<struct sockaddr*>(&local_addr), &addr_len) == 0) {
+        logMessage("UDP socket bound to local port: " + std::to_string(ntohs(local_addr.sin_port)));
+    }
+    
     // 设置服务器地址
     memset(&server_addr_, 0, sizeof(server_addr_));
     server_addr_.sin_family = AF_INET;
@@ -763,6 +886,7 @@ bool WindowsVPNClient::createSocket() {
         return false;
     }
     
+    logMessage("UDP socket configured for server: " + config_.server_address + ":" + std::to_string(config_.server_port));
     return true;
 }
 
@@ -1253,6 +1377,114 @@ void WindowsVPNClient::waitForThreadsToFinish() {
     
     if (connection_state_.load() != ConnectionState::DISCONNECTED) {
         logMessage("All threads cleanup completed");
+    }
+}
+
+bool WindowsVPNClient::handlePingPacket(const uint8_t* data, size_t length) {
+    logMessage("[Ping Handler] Checking packet: " + std::to_string(length) + " bytes");
+    
+    // 检查是否是以太网帧
+    if (length < 14) {
+        logMessage("[Ping Handler] Too short for Ethernet frame");
+        return false;
+    }
+    
+    // 跳过以太网头部，检查IP头部
+    const uint8_t* ip_header = data + 14;
+    size_t ip_length = length - 14;
+    
+    if (ip_length < 20) {
+        logMessage("[Ping Handler] Too short for IP header");
+        return false;
+    }
+    
+    // 检查是否是IPv4 ICMP包
+    if ((ip_header[0] & 0xF0) != 0x40) {
+        logMessage("[Ping Handler] Not IPv4 packet, version: " + std::to_string((ip_header[0] & 0xF0) >> 4));
+        return false;
+    }
+    
+    if (ip_header[9] != 1) {
+        logMessage("[Ping Handler] Not ICMP protocol, protocol: " + std::to_string(ip_header[9]));
+        return false;
+    }
+    
+    // 获取IP头部长度
+    uint8_t ip_header_len = (ip_header[0] & 0x0F) * 4;
+    if (ip_length < ip_header_len + 8) {
+        logMessage("[Ping Handler] Too short for ICMP header");
+        return false;
+    }
+    
+    const uint8_t* icmp_header = ip_header + ip_header_len;
+    
+    // 检查是否是ping请求 (ICMP Echo Request, type=8)
+    if (icmp_header[0] != 8) {
+        logMessage("[Ping Handler] Not ping request, ICMP type: " + std::to_string(icmp_header[0]));
+        return false;
+    }
+    
+    logMessage("[Ping Handler] Received ping request, generating reply");
+    
+    // 创建ping回复包
+    std::vector<uint8_t> reply_packet(data, data + length);
+    
+    // 修改以太网头部：交换源和目标MAC地址
+    for (int i = 0; i < 6; i++) {
+        std::swap(reply_packet[i], reply_packet[i + 6]);
+    }
+    
+    // 修改IP头部：交换源和目标IP地址
+    uint8_t* reply_ip = reply_packet.data() + 14;
+    for (int i = 0; i < 4; i++) {
+        std::swap(reply_ip[12 + i], reply_ip[16 + i]);
+    }
+    
+    // 重新计算IP校验和
+    reply_ip[10] = 0; // 清除原校验和
+    reply_ip[11] = 0;
+    uint32_t checksum = 0;
+    for (int i = 0; i < ip_header_len; i += 2) {
+        checksum += (reply_ip[i] << 8) + reply_ip[i + 1];
+    }
+    while (checksum >> 16) {
+        checksum = (checksum & 0xFFFF) + (checksum >> 16);
+    }
+    checksum = ~checksum;
+    reply_ip[10] = (checksum >> 8) & 0xFF;
+    reply_ip[11] = checksum & 0xFF;
+    
+    // 修改ICMP头部：将type从8改为0 (Echo Reply)
+    uint8_t* reply_icmp = reply_packet.data() + 14 + ip_header_len;
+    reply_icmp[0] = 0; // ICMP Echo Reply
+    
+    // 重新计算ICMP校验和
+    reply_icmp[2] = 0; // 清除原校验和
+    reply_icmp[3] = 0;
+    checksum = 0;
+    size_t icmp_length = ip_length - ip_header_len;
+    for (size_t i = 0; i < icmp_length; i += 2) {
+        if (i + 1 < icmp_length) {
+            checksum += (reply_icmp[i] << 8) + reply_icmp[i + 1];
+        } else {
+            checksum += reply_icmp[i] << 8;
+        }
+    }
+    while (checksum >> 16) {
+        checksum = (checksum & 0xFFFF) + (checksum >> 16);
+    }
+    checksum = ~checksum;
+    reply_icmp[2] = (checksum >> 8) & 0xFF;
+    reply_icmp[3] = checksum & 0xFF;
+    
+    // 直接写入TAP接口，而不是通过服务端转发
+    DWORD bytes_written;
+    if (tap_interface_->writePacket(reply_packet.data(), reply_packet.size(), &bytes_written)) {
+        logMessage("[Ping Handler] Ping reply sent directly to TAP interface: " + std::to_string(bytes_written) + " bytes");
+        return true;
+    } else {
+        logMessage("[Ping Handler] Failed to write ping reply to TAP interface: " + tap_interface_->getLastError());
+        return false;
     }
 }
 

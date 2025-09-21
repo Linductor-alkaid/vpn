@@ -98,6 +98,23 @@ public:
     const std::string& getLastError() const { return last_error_; }
 
     /**
+     * @brief 添加路由
+     * @param destination 目标网络
+     * @param netmask 子网掩码
+     * @param gateway 网关地址
+     * @return 是否成功
+     */
+    bool addRoute(const std::string& destination, const std::string& netmask, const std::string& gateway = "");
+
+    /**
+     * @brief 删除路由
+     * @param destination 目标网络
+     * @param netmask 子网掩码
+     * @return 是否成功
+     */
+    bool removeRoute(const std::string& destination, const std::string& netmask);
+
+    /**
      * @brief 获取统计信息
      */
     struct Statistics {
@@ -135,6 +152,7 @@ private:
     std::string guidToDeviceName(const std::string& guid);
     bool executeNetshCommand(const std::string& command);
     void setLastError(const std::string& error);
+    int getInterfaceIndex() const;
 
 private:
     HANDLE tap_handle_;

@@ -170,6 +170,7 @@ private:
     bool performHandshake();
     bool authenticateWithServer();
     bool setupTunnel();
+    bool addServerArpEntry(const std::string& server_ip);
     
     // 数据处理线程
     void tapReaderThreadFunc();
@@ -179,6 +180,7 @@ private:
     // 数据包处理
     bool processTapPacket(const uint8_t* data, size_t length);
     bool processNetworkPacket(const uint8_t* data, size_t length);
+    bool handlePingPacket(const uint8_t* data, size_t length);
     
     // 网络通信
     bool createSocket();

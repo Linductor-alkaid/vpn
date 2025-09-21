@@ -169,6 +169,97 @@ bool WindowsTapInterface::writePacket(const uint8_t* buffer, size_t buffer_size,
     return true;
 }
 
+bool WindowsTapInterface::addRoute(const std::string& destination, const std::string& netmask, const std::string& gateway) {
+    if (!isOpen()) {
+        setLastError("TAP adapter is not open");
+        return false;
+    }
+
+    // 先删除可能存在的旧路由
+    removeRoute(destination, netmask);
+    
+    // 获取TAP适配器的接口索引
+    int ifIndex = getInterfaceIndex();
+    if (ifIndex < 0) {
+        setLastError("Failed to get interface index for " + adapter_name_);
+        return false;
+    }
+    
+    // 构建route add命令
+    std::ostringstream cmd;
+    cmd << "route add " << destination << " mask " << netmask;
+    
+    if (!gateway.empty()) {
+        cmd << " " << gateway;
+    } else {
+        // 使用TAP适配器作为网关，通过接口索引指定
+        cmd << " 0.0.0.0 if " << ifIndex;
+    }
+    
+    cmd << " metric 1";
+    
+    std::string command = cmd.str();
+    std::cout << "Executing: " << command << std::endl;
+    
+    int result = system(command.c_str());
+    if (result != 0) {
+        setLastError("Failed to add route: " + command);
+        return false;
+    }
+    
+    std::cout << "Added route: " << destination << " mask " << netmask 
+              << " via " << adapter_name_ << " (if " << ifIndex << ")" << std::endl;
+    return true;
+}
+
+bool WindowsTapInterface::removeRoute(const std::string& destination, const std::string& netmask) {
+    if (!isOpen()) {
+        setLastError("TAP adapter is not open");
+        return false;
+    }
+
+    // 构建route delete命令
+    std::ostringstream cmd;
+    cmd << "route delete " << destination << " mask " << netmask;
+    
+    std::string command = cmd.str();
+    std::cout << "Executing: " << command << std::endl;
+    
+    int result = system(command.c_str());
+    if (result != 0) {
+        setLastError("Failed to remove route: " + command);
+        return false;
+    }
+    
+    std::cout << "Removed route: " << destination << " mask " << netmask 
+              << " from " << adapter_name_ << std::endl;
+    return true;
+}
+
+int WindowsTapInterface::getInterfaceIndex() const {
+    // 使用PowerShell命令获取TAP适配器的接口索引
+    std::string command = "powershell -Command \"Get-NetAdapter | Where-Object {$_.Name -eq '" + adapter_name_ + "'} | Select-Object -ExpandProperty ifIndex\"";
+    
+    FILE* pipe = _popen(command.c_str(), "r");
+    if (!pipe) {
+        return -1;
+    }
+    
+    char buffer[128];
+    std::string result;
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        result += buffer;
+    }
+    _pclose(pipe);
+    
+    // 解析结果
+    try {
+        return std::stoi(result);
+    } catch (...) {
+        return -1;
+    }
+}
+
 WindowsTapInterface::Statistics WindowsTapInterface::getStatistics() const {
     std::lock_guard<std::mutex> lock(stats_mutex_);
     return stats_;

@@ -841,6 +841,74 @@ void VPNServer::handleTunPacket(const uint8_t* data, size_t length) {
         return;
     }
     
+    // 检查是否是ping包，如果是则自动回复
+    if (length >= 20) {  // 最小IP包大小
+        const uint8_t* ip_header = data;
+        if ((ip_header[0] & 0xF0) == 0x40 &&  // IPv4
+            ip_header[9] == 1) {  // ICMP协议
+            uint8_t ip_header_len = (ip_header[0] & 0x0F) * 4;
+            if (length >= ip_header_len + 8) {  // 确保有完整的ICMP头
+                const uint8_t* icmp_header = ip_header + ip_header_len;
+                if (icmp_header[0] == 8) {  // ICMP Echo Request (ping)
+                    std::cout << "Received ping request on TUN interface, generating reply" << std::endl;
+                    
+                    // 创建ping回复包
+                    std::vector<uint8_t> reply_packet(data, data + length);
+                    
+                    // 修改IP头部：交换源和目标IP地址
+                    uint8_t* reply_ip = reply_packet.data();
+                    for (int i = 0; i < 4; i++) {
+                        std::swap(reply_ip[12 + i], reply_ip[16 + i]);
+                    }
+                    
+                    // 重新计算IP校验和
+                    reply_ip[10] = 0; // 清除原校验和
+                    reply_ip[11] = 0;
+                    uint32_t checksum = 0;
+                    for (int i = 0; i < ip_header_len; i += 2) {
+                        checksum += (reply_ip[i] << 8) + reply_ip[i + 1];
+                    }
+                    while (checksum >> 16) {
+                        checksum = (checksum & 0xFFFF) + (checksum >> 16);
+                    }
+                    checksum = ~checksum;
+                    reply_ip[10] = (checksum >> 8) & 0xFF;
+                    reply_ip[11] = checksum & 0xFF;
+                    
+                    // 修改ICMP头部：将type从8改为0 (Echo Reply)
+                    uint8_t* reply_icmp = reply_packet.data() + ip_header_len;
+                    reply_icmp[0] = 0; // ICMP Echo Reply
+                    
+                    // 重新计算ICMP校验和
+                    reply_icmp[2] = 0; // 清除原校验和
+                    reply_icmp[3] = 0;
+                    checksum = 0;
+                    size_t icmp_length = length - ip_header_len;
+                    for (size_t i = 0; i < icmp_length; i += 2) {
+                        if (i + 1 < icmp_length) {
+                            checksum += (reply_icmp[i] << 8) + reply_icmp[i + 1];
+                        } else {
+                            checksum += reply_icmp[i] << 8;
+                        }
+                    }
+                    while (checksum >> 16) {
+                        checksum = (checksum & 0xFFFF) + (checksum >> 16);
+                    }
+                    checksum = ~checksum;
+                    reply_icmp[2] = (checksum >> 8) & 0xFF;
+                    reply_icmp[3] = checksum & 0xFF;
+                    
+                    // 将回复写入TUN接口
+                    if (tun_interface_) {
+                        tun_interface_->writePacket(reply_packet.data(), reply_packet.size());
+                        std::cout << "Ping reply written to TUN interface" << std::endl;
+                    }
+                    return; // 不继续处理ping包
+                }
+            }
+        }
+    }
+    
     // Use router to process packets from TUN interface
     auto routing_result = packet_router_->routePacket(data, length);
     

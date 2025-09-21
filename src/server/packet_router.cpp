@@ -169,8 +169,11 @@ PacketRouter::RoutingResult PacketRouter::routePacket(const uint8_t* packet, siz
         std::cout << "Route packet: " << src_ip << " -> " << dest_ip << std::endl;
     }
     
-    // Check if destination IP is in virtual network
-    if (!isInVirtualNetwork(dest_ip)) {
+    // Check if destination IP is in virtual network or is a broadcast address
+    bool is_virtual_network = isInVirtualNetwork(dest_ip);
+    bool is_broadcast = (dest_ip == "255.255.255.255" || dest_ip == "10.8.0.255"); // 添加广播地址检查
+    
+    if (!is_virtual_network && !is_broadcast) {
         result.action = RoutingResult::DROP;
         result.reason = "Destination IP not in virtual network";
         updateStats(result.action);
