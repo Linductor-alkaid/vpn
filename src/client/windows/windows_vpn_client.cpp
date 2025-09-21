@@ -435,7 +435,15 @@ bool WindowsVPNClient::setupTunnel() {
         return false;
     }
     
-    // 添加服务端特定路由 - 只为服务端IP添加路由，不是整个网段
+    // 添加整个虚拟网络的路由 - 确保所有虚拟网络流量都通过TAP接口
+    std::string virtual_network = "10.8.0.0";  // 虚拟网络
+    std::string network_mask = "255.255.255.0";  // 网络掩码
+    if (!tap_interface_->addRoute(virtual_network, network_mask)) {
+        logMessage("Warning: Failed to add virtual network route: " + tap_interface_->getLastError());
+        // 不返回失败，因为路由可能已经存在
+    }
+    
+    // 添加服务端特定路由 - 确保服务端IP路由优先级
     std::string server_ip = "10.8.0.1";  // 服务端IP
     std::string host_mask = "255.255.255.255";  // 主机路由
     if (!tap_interface_->addRoute(server_ip, host_mask)) {
@@ -513,16 +521,39 @@ void WindowsVPNClient::tapReaderThreadFunc() {
                         logMessage("[TAP Reader] Failed to handle ping packet");
                     }
                 } else {
-                    // 处理其他数据包
-                    other_packets++;
-                    if (other_packets % 50 == 0) {  // 每50个包记录一次
-                        logMessage("[TAP Reader] Processing other packet: " + std::to_string(bytes_read) + " bytes (processed: " + std::to_string(other_packets) + ")");
+                    // 检查是否是有效的IP数据包
+                    bool is_valid_ip_packet = false;
+                    if (bytes_read >= 42) {  // 最小以太网帧 + IP头
+                        const uint8_t* ip_header = buffer + 14;  // 跳过以太网头部
+                        if ((ip_header[0] & 0xF0) == 0x40) {  // IPv4
+                            // 检查IP头部长度是否合理
+                            uint8_t ip_header_len = (ip_header[0] & 0x0F) * 4;
+                            if (ip_header_len >= 20 && ip_header_len <= 60 && 
+                                bytes_read >= 14 + ip_header_len) {
+                                is_valid_ip_packet = true;
+                            }
+                        }
                     }
                     
-                    if (processTapPacket(buffer, bytes_read)) {
-                        // 数据包已发送到服务器
+                    if (is_valid_ip_packet) {
+                        // 处理有效的IP数据包
+                        other_packets++;
+                        if (other_packets % 50 == 0) {  // 每50个包记录一次
+                            logMessage("[TAP Reader] Processing valid IP packet: " + std::to_string(bytes_read) + " bytes (processed: " + std::to_string(other_packets) + ")");
+                        }
+                        
+                        if (processTapPacket(buffer, bytes_read)) {
+                            // 数据包已发送到服务器
+                        } else {
+                            logMessage("[TAP Reader] Failed to process data packet");
+                        }
                     } else {
-                        logMessage("[TAP Reader] Failed to process data packet");
+                        // 忽略无效的数据包（如ARP、广播等）
+                        static int ignored_packets = 0;
+                        ignored_packets++;
+                        if (ignored_packets % 100 == 0) {  // 每100个包记录一次
+                            logMessage("[TAP Reader] Ignored invalid packet: " + std::to_string(bytes_read) + " bytes (ignored: " + std::to_string(ignored_packets) + ")");
+                        }
                     }
                 }
             }

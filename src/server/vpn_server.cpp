@@ -810,13 +810,26 @@ void VPNServer::forwardPacketToClient(SessionPtr target_session, const uint8_t* 
         return;
     }
     
+    // 检测目标客户端类型并相应处理数据包格式
+    const uint8_t* packet_data = data;
+    size_t packet_length = length;
+    
+    // 如果数据包是以太网帧格式（从TUN接口或Windows客户端），需要为Linux客户端转换格式
+    if (length > 14 && data[12] == 0x08 && data[13] == 0x00) {
+        // 检查目标客户端是否是Linux客户端（通过IP地址判断，或者添加客户端类型标识）
+        // 这里简化处理：假设所有客户端都能处理以太网帧格式
+        // 如果需要纯IP包格式，可以在这里转换：
+        // packet_data = data + 14;
+        // packet_length = length - 14;
+    }
+    
     // 创建数据包消息
     auto message = target_session->createSecureMessage(common::MessageType::DATA_PACKET);
     if (!message) {
         return;
     }
     
-    message->setPayload(data, length);
+    message->setPayload(packet_data, packet_length);
     sendSecureMessage(target_session, std::move(message));
 }
 

@@ -299,11 +299,24 @@ void PacketRouter::resetStats() {
 }
 
 const IPHeader* PacketRouter::parseIPHeader(const uint8_t* packet, size_t packet_size) const {
-    if (packet_size < sizeof(IPHeader)) {
+    // 检查是否是以太网帧格式（从Windows TAP接口发送）
+    const uint8_t* ip_packet = packet;
+    size_t ip_packet_size = packet_size;
+    
+    // 如果数据包大小大于14字节且前14字节看起来像以太网头部，则跳过
+    if (packet_size > 14) {
+        // 检查以太网类型字段（偏移12-13），0x0800表示IPv4
+        if (packet[12] == 0x08 && packet[13] == 0x00) {
+            ip_packet = packet + 14;  // 跳过以太网头部
+            ip_packet_size = packet_size - 14;
+        }
+    }
+    
+    if (ip_packet_size < sizeof(IPHeader)) {
         return nullptr;
     }
     
-    const IPHeader* header = reinterpret_cast<const IPHeader*>(packet);
+    const IPHeader* header = reinterpret_cast<const IPHeader*>(ip_packet);
     
     // 验证IP版本
     if (header->getVersion() != 4) {
@@ -311,7 +324,7 @@ const IPHeader* PacketRouter::parseIPHeader(const uint8_t* packet, size_t packet
     }
     
     // 验证头长度
-    if (header->getHeaderLength() < 20 || header->getHeaderLength() > packet_size) {
+    if (header->getHeaderLength() < 20 || header->getHeaderLength() > ip_packet_size) {
         return nullptr;
     }
     
